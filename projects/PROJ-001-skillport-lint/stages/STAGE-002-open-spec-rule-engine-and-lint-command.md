@@ -5,7 +5,7 @@
 
 stage:
   id: STAGE-002                     # stable, zero-padded, continuous across the repo
-  status: active                    # proposed | active | shipped | cancelled | on_hold
+  status: shipped                   # proposed | active | shipped | cancelled | on_hold
   priority: high                    # critical | high | medium | low
   target_complete: null             # optional: YYYY-MM-DD
 
@@ -15,7 +15,7 @@ repo:
   id: skillport
 
 created_at: 2026-07-17
-shipped_at: null
+shipped_at: 2026-07-18
 
 value_contribution:
   advances: "The 'genuinely useful lint' half of the project thesis — the crisp, citable validator teams put in CI."
@@ -128,14 +128,13 @@ open-spec-backed rules are firm; per DEC-003 nothing heuristic is error-level.
   The parser does NOT take last-write-wins; `serde_yaml_ng` rejects duplicate keys,
   so a duplicate already surfaces as `frontmatter.invalid` (error, message names the
   key). A separate rule would add redundant public surface (DEC-005) — not added.
-- [~] SPEC-007 (design) — perm-denied subtree → `dir.unreadable` **warning** finding
-  (resolves signal `walk-unreadable-dirs`): the walk records an unreadable directory
-  instead of silently skipping it, so `lint` never claims clean coverage it didn't
-  have. Extends `CollectionItem` + `Report::from_collection`. **Last STAGE-002 spec.**
+- [x] SPEC-007 (shipped 2026-07-18, PR #7) — perm-denied subtree → `dir.unreadable`
+  **warning** finding (resolves signal `walk-unreadable-dirs`): the walk records an
+  unreadable directory instead of silently skipping it. Extends `CollectionItem` +
+  `Report::from_collection`.
 
-**Count:** 3 shipped / 1 in design / 0 pending (`key.duplicate` closed as
-resolved-redundant; SPEC-007 is the last STAGE-002 spec — after it, only the
-STAGE-003-owned `body.size`/`--target` remain of the open-spec plan).
+**Count:** 4 shipped / 0 active / 0 pending — **stage backlog complete**
+(`key.duplicate` closed as resolved-redundant; `body.size`/`--target` are STAGE-003).
 
 ## Design Notes
 
@@ -160,11 +159,36 @@ STAGE-003-owned `body.size`/`--target` remain of the open-spec plan).
 
 ## Stage-Level Reflection
 
-*Filled in when status moves to shipped.*
+*Shipped 2026-07-18.*
 
-- **Did we deliver the outcome in "What This Stage Is"?** <not yet>
-- **How many specs did it actually take?** <not yet>
-- **What changed between starting and shipping?** <not yet>
-- **Lessons that should update AGENTS.md, templates, or constraints?** <not yet>
-- **Signals dispositioned at this close?** <not yet>
-- **Should any spec-level reflections be promoted to stage-level lessons?** <not yet>
+- **Did we deliver the outcome in "What This Stage Is"?** Yes. `skillport lint
+  <path> [--json] [--strict]` runs and enforces the **entire open-spec catalog**
+  over a file/folder/tree with three severities, stable rule ids, a stable
+  `--json` schema (`schema: 1`), correct CI exit codes (0/1/2), stdout/stderr
+  separation, and never-abort bulk behavior. It even surfaces coverage gaps
+  (`dir.unreadable`). This is the "genuinely useful lint" half of the project thesis.
+- **How many specs did it actually take?** 4 (SPEC-004 rule engine + identity
+  rules, SPEC-005 the CLI+emitters, SPEC-006 the rest of the catalog, SPEC-007
+  unreadable-dir). `key.duplicate` was closed as resolved-redundant (no spec).
+  ~95 tests; every spec APPROVED first pass by an independent Opus verifier.
+- **What changed between starting and shipping?** We **pulled the CLI (SPEC-005)
+  ahead** of the remaining rules (SPEC-006) at the user's request, so `skillport
+  lint` became runnable sooner and the last rules dropped into `lint_skill`
+  without touching the CLI — validating the SPEC-003 `rule_fn` seam.
+- **Lessons that should update AGENTS.md, templates, or constraints?** None
+  promoted to codified beyond `name-charset-ascii` (already codified in SPEC-006).
+  The metered-subagent pipeline (Sonnet build / Opus verify) is now the settled
+  workflow — captured in memory; the process-debt `cost-metering-manual-sessions`
+  stays `accepted` pending the PROJ-001-close confirmation.
+- **Signals dispositioned at this close?** All STAGE-002-owned signals walked (no
+  silent carry):
+  - `walk-unreadable-dirs` (lesson, watch) → **resolved/codified** — implemented as
+    `dir.unreadable` in SPEC-007.
+  - `spec-pin-edge-cases` (lesson, watch, N=1) → **kept watch**; its concrete carry
+    (lock empty-`Present` frontmatter) was completed in SPEC-004; no new occurrence
+    in STAGE-002. `last_touched` bumped.
+  - `name-charset-ascii` → already `codified` (SPEC-006).
+- **Should any spec-level reflections be promoted to stage-level lessons?** One
+  worth keeping: *verify an assumption about existing behavior before designing a
+  backlog item* (the `key.duplicate` investigation turned a "loose end" into a
+  non-task). Recorded here; below the N=3 codify bar, so not codified.

@@ -100,15 +100,16 @@ linter now would force that rewrite later (DEC-004).
   `Skill` model (SPEC-001), collection tree-walker (SPEC-002), sectioned N-skill
   report + stable-id findings + `rule_fn` seam + exit codes (SPEC-003). 3 specs,
   65 tests, all APPROVED first pass. The DEC-004 reuse base is in place.
-- [ ] STAGE-002 (proposed, next) — Open-spec rule engine + `lint` command: implement
-  the rule catalog as `rule_fn`; single-skill + tree modes; human + `--json`; exit
-  codes + `--strict`; per-file parse errors don't abort a bulk run.
-- [ ] STAGE-003 (proposed) — Per-platform layer + DX: `--target claude` (verified
+- [x] STAGE-002 (shipped 2026-07-18) — Open-spec rule engine + `lint` command:
+  `rules::lint_skill` + the full open catalog, the `skillport lint` CLI (human +
+  `--json`, exit codes, `--strict`), and `dir.unreadable` coverage. 4 specs
+  (SPEC-004…007), ~95 tests, all APPROVED first pass. `skillport lint` is runnable.
+- [ ] STAGE-003 (proposed, next) — Per-platform layer + DX: `--target claude` (verified
   from primary docs); real-tokenizer `body.size`; `--sarif`; GitHub Action;
   README with rule ids/severities; per-rule tests + fixtures + the
   zero-findings-on-a-perfect-skill test.
 
-**Count:** 1 shipped / 0 active / 2 pending
+**Count:** 2 shipped / 0 active / 1 pending
 
 ## Dependencies
 

@@ -7,7 +7,7 @@
 task:
   id: SPEC-007
   type: story                      # epic | story | task | bug | chore
-  cycle: design                    # frame | design | build | verify | ship
+  cycle: ship  # frame | design | build | verify | ship
   blocked: false
   priority: medium
   complexity: M                    # S | M | L  (L means split it)
@@ -60,15 +60,32 @@ cost:
     - cycle: build
       agent: claude-sonnet-5
       interface: claude-code
+      tokens_total: 107824
+      estimated_usd: 0.71
+      duration_minutes: 10
+      recorded_at: 2026-07-18
+      notes: "metered Sonnet build subagent; tokens_total = subagent_tokens. estimated_usd = tokens x repo rate 6.60 (blended order-of-magnitude). duration wall-clock."
+    - cycle: verify
+      agent: claude-opus-4-8
+      interface: claude-code
+      tokens_total: 81857
+      estimated_usd: 0.54
+      duration_minutes: 18
+      recorded_at: 2026-07-18
+      notes: "metered Opus verify subagent (independent review incl. chmod-000 repro; APPROVED, 0 punch-list)."
+    - cycle: ship
+      agent: claude-opus-4-8
+      interface: claude-code
       tokens_total: null
       estimated_usd: null
       duration_minutes: null
       recorded_at: 2026-07-18
-      notes: "metered subagent; orchestrator fills real numbers from Agent result at ship"
+      notes: "main-loop, not separately metered (ship cycle)"
   totals:
-    tokens_total: 0
-    estimated_usd: 0
-    session_count: 0
+    tokens_total: 189681
+    estimated_usd: 1.25
+    session_count: 4
+shipped_at: 2026-07-18
 ---
 
 # SPEC-007: surface unreadable directories as findings
@@ -282,16 +299,21 @@ Process-focused: how did the build go? What friction did the spec create?
 from the process-focused build reflection above.*
 
 1. **What would I do differently next time?**
-   — <answer>
+   — Empirically checking the parser's actual behavior *before* designing paid off:
+   it turned the `key.duplicate` "loose end" into a non-task (already covered by
+   `frontmatter.invalid`), saving a redundant rule. Worth doing whenever a backlog
+   item rests on an assumption about existing behavior — verify the assumption first.
 
 2. **Does any template, constraint, or decision need updating?**
-   — <answer — if yes but not done this session, record it in
-   `/guidance/signals.yaml`: `type: lesson` (with its N-count) for a recurring
-   coding pattern, `type: process-debt` for tooling/process friction. A close
-   then forces the decision. See `docs/signals.md`.>
+   — No. Resolves the `walk-unreadable-dirs` signal (implemented) and closes
+   `key.duplicate` (resolved-redundant). Both dispositioned at the STAGE-002 close.
+   The double-"read error:" message nesting the verifier noted is cosmetic and
+   consistent with the existing `file.unreadable` message — left as-is.
 
 3. **Is there a follow-up spec I should write now before I forget?**
-   — <answer>
+   — No new follow-up. STAGE-002 is done; the remaining PROJ-001 work is STAGE-003
+   (per-platform `--target claude` verified from primary docs, real-tokenizer
+   `body.size`, `--sarif`, GitHub Action, README rule-id table).
 
 4. **Where was the worst defect caught?** — one word from a fixed vocabulary so
    the defect-escape distribution is greppable across specs:
