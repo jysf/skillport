@@ -1,111 +1,119 @@
 # skillport
 
-**A fast Rust CLI that validates and audits agent Skills (`SKILL.md` files).**
+**A fast Rust tool that validates and audits agent Skills (`SKILL.md` files).**
 
 skillport answers two questions about agent skills:
 
 - **"Does this skill conform?"** — `lint` checks a single skill, a folder, or a
   whole tree against the open [Agent Skills spec](https://agentskills.io/specification),
-  with three severities and CI-friendly exit codes. *(PROJ-001)*
+  with three severities (error / warning / info) and CI-friendly exit codes.
+  *(PROJ-001)*
 - **"How healthy and how risky is this *collection* of skills?"** — `audit`
   produces a human-read report over a skill library: inventory, description
   overlap, a permissions manifest (what each skill can do), and hash-anchored
   provenance/drift detection. *(PROJ-002)*
 
 The differentiated value is **validation + normalization + library/security
-audit** with per-platform awareness and bulk/CI ergonomics — deliberately *not*
-a converter (that lane is already crowded; see `decisions/DEC-001`). Only the
-open spec is authoritative; per-platform constraints are advisory until
-confirmed from that platform's primary docs (`decisions/DEC-002`).
+audit** with per-platform awareness and bulk/CI ergonomics — deliberately *not* a
+converter (that lane is already crowded; see [`decisions/DEC-001`](decisions/DEC-001-not-a-converter.md)).
+Only the open spec is authoritative; per-platform constraints are advisory until
+confirmed from that platform's primary docs ([`decisions/DEC-002`](decisions/DEC-002-open-spec-authoritative.md)).
 
-Build: `cargo build --release` → `target/release/skillport`. See `AGENTS.md`
-§5–6 for the toolchain and commands.
+## Status
 
-> **Status:** PROJ-001 (foundation + `lint`) is in Frame/Design. No `src/` yet.
+skillport is **mid-build** and not yet released.
 
----
-
-*The rest of this file documents the spec-driven meta-process used to build
-skillport, where Claude plays every role (architect, implementer, reviewer)
-across different sessions.*
-
-## Hierarchy
-
-```
-Repo (this app)
- └─ Project (a wave of work: "MVP", "v2 improvements")
-     └─ Stage (a coherent chunk within a project)
-         └─ Spec (an individual task)
-              └─ Cycle (Frame → Design → Build → Verify → Ship)
-```
-
-## Getting started
-
-**First time?** Read `GETTING_STARTED.md` — it walks you through your first project end-to-end.
-
-**Daily work?** Run `just --list` to see available commands.
-
-**Common commands:**
-```bash
-just status                        # See active project, stage, specs by cycle
-just backlog                       # Spec-grained: what's next in the active stage
-just roadmap                       # Stage-grained: where this project is going
-just new-spec "title" STAGE-001    # Scaffold a new spec
-just advance-cycle SPEC-001 verify # Update a spec's cycle
-just archive-spec SPEC-001         # Move a shipped spec to done/
-just review                        # Print the weekly review prompt
-just report daily                  # Generate today's daily report
-just report weekly                 # Generate this week's weekly report
-just report status                 # Snapshot `just status` to reports/daily/<date>-status.md
-```
-`report-daily` / `report-weekly` remain as permanent aliases for
-`report daily` / `report weekly`.
-
-## Reports
-
-`just report-daily` and `just report-weekly` generate quantitative
-snapshots under `reports/daily/` and `reports/weekly/` from spec
-front-matter and git log. Daily reports show specs by cycle, value
-thesis, cost activity today, and flags. Weekly reports aggregate
-ships, cycle times, cost by cycle and interface, and value
-advancement. Reports are stand-alone artifacts — re-running
-overwrites, so they're always a current snapshot.
-
-## Key discipline in this variant
-
-Because Claude plays every role, context contamination is the biggest risk. Four habits keep it at bay:
-
-1. **New session per cycle** (especially design → build and build → verify)
-2. **The spec file is the source of truth** between sessions — no "as I said earlier"
-3. **Weekly review is non-optional** (`just review`)
-4. **Honest confidence values** on decisions
-
-See `AGENTS.md` section 15 for the full discipline.
-
-## The app itself
-
-skillport (described at the top of this file) is a Rust CLI for validating and
-auditing agent `SKILL.md` files. Run it locally with `cargo run -- lint <path>`
-and the release binary with `cargo build --release`; run tests with
-`cargo test`. Full toolchain and command list: `AGENTS.md` §5–6.
-
-## Where things live
-
-| Path | Purpose |
+| Piece | State |
 |---|---|
-| `AGENTS.md` | Conventions for Claude working in this repo |
-| `.repo-context.yaml` | Structured metadata about the app |
-| `docs/` | Architecture, data model, API contract |
-| `guidance/` | Repo-level rules, open questions, and the signals ledger (`just dash signals`) |
-| `decisions/` | Decision log (accumulates across projects) |
-| `projects/` | Each project (wave of work) lives here |
-| `projects/*/brief.md` | What this project is and why |
-| `projects/*/stages/` | Stages within a project |
-| `projects/*/specs/` | Specs within a project (with folded-in Implementation Context) |
-| `src/` | The Rust CLI (created by PROJ-001 build specs) |
+| Parser (`SKILL.md` → canonical `Skill`, tolerant + lossless) | ✅ shipped (SPEC-001) |
+| Collection tree-walker (`walk` → path-sorted `Collection`) | ✅ shipped (SPEC-002) |
+| Report model (`Finding`/`Severity`/`Report`, exit codes) | ✅ shipped (SPEC-003) |
+| Rule engine — frontmatter / `name.*` / `description.*` / `compatibility` | ✅ shipped (SPEC-004) |
+| Remaining rules (`metadata.*`, `allowed-tools`, `body.*`, unknown-field) | ⏳ next (SPEC-005) |
+| **`lint` CLI** (arg parsing, `--json`, `--strict`, exit codes) | ⏳ pending |
+| `audit` command | ⏳ PROJ-002 |
+
+There is **no `skillport lint` binary yet** — `src/main.rs` is a stub until the
+CLI spec lands. To see the shipped substrate validate real skills today, use the
+demo below.
+
+## Build & run
+
+Requires a current stable Rust toolchain (edition 2021). Commands live in
+`app.just` (run `just --list` to see them all):
+
+```bash
+just build          # cargo build
+just test           # full test suite (unit + integration + fixtures)
+just clippy         # cargo clippy --all-targets -- -D warnings
+just fmt-check      # formatting check
+just doc            # open the API docs to eyeball the substrate
+just build-release  # release binary -> target/release/skillport (currently a stub)
+```
+
+Plain cargo works too: `cargo test`, `cargo build --release`, etc.
+
+### See it work today (`just demo`)
+
+Until the real CLI ships, `just demo` runs a small example
+([`examples/lint_demo.rs`](examples/lint_demo.rs)) that drives the shipped library
+(`walk` → `Report::from_collection(.., lint_skill)`) over a path and prints
+findings:
+
+```bash
+just demo                     # lints ./lint-fixtures (a good and a bad skill)
+just demo path/to/skills      # lint any file / folder / tree
+```
+
+Sample output:
+
+```
+lint-fixtures/bad/My-Skill/SKILL.md
+  error   description.required [description] — 'description' is required
+  error   name.charset [name] — 'name' may only contain lowercase letters, digits, and hyphens (invalid: MS!)
+  error   name.hyphen-consecutive [name] — 'name' must not contain consecutive hyphens
+  error   name.hyphen-edges [name] — 'name' must not start or end with a hyphen
+  warning name.dir-match [name] — 'name' (-My--Skill!) should match the skill directory name (My-Skill)
+
+lint-fixtures/good/data-analysis/SKILL.md
+  ✓ no findings
+
+2 skill(s): 4 error(s), 1 warning(s), 0 info(s)
+would-be CI exit code: 1 (non-strict) / 1 (--strict)
+```
+
+The rules shown are the SPEC-004 batch; `metadata.*`, `allowed-tools`, `body.*`,
+and unknown-field checks arrive in SPEC-005.
+
+## Layout
+
+```
+src/
+  skill.rs    canonical, order-preserving, lossless Skill model
+  parse.rs    SKILL.md -> frontmatter + body (tolerant: BOM/CRLF/missing/unclosed/invalid)
+  walk.rs     a path -> a Collection of skills (skips .git/node_modules/target; never aborts)
+  report.rs   Finding / Severity / sectioned N-skill Report + exit codes; Report::from_collection
+  rules.rs    the open-spec rule engine (lint_skill = the rule_fn from_collection consumes)
+  lib.rs      library root (the substrate); main.rs is a stub until the CLI ships
+examples/
+  lint_demo.rs  the `just demo` example (stand-in for the CLI)
+lint-fixtures/  good/ + bad/ example skills (tests + demo)
+```
+
+Design docs: [`docs/architecture.md`](docs/architecture.md),
+[`docs/data-model.md`](docs/data-model.md),
+[`docs/api-contract.md`](docs/api-contract.md). Rationale:
+[`decisions/`](decisions/) (DEC-001…007).
+
+## How this repo is built
+
+skillport is developed with a spec-driven workflow (Claude as architect /
+implementer / reviewer across fresh sessions). That meta-process — the
+Repo → Project → Stage → Spec → Cycle hierarchy and the `just` workflow commands —
+is documented separately in [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 
 ## License
 
-Apache-2.0 (see `LICENSE`) — inherited from the template. (The prototype
-declared MIT; the app's final license is a call to confirm before first
+Apache-2.0 (see [`LICENSE`](LICENSE)) — inherited from the template. (The
+prototype declared MIT; the app's final license is a call to confirm before first
 release.)
