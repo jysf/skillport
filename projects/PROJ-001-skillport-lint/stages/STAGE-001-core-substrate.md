@@ -95,13 +95,14 @@ parse.
   Collection` (skips `.git`/`node_modules`/`target`; single file & tree both yield
   a collection; unreadable/non-UTF-8 file → `Unreadable` item, never aborts;
   path-sorted). Reuses SPEC-001's `parse`. `tempfile` dev-dep only.
-- [ ] (not yet written) — Finding + `Severity` + sectioned N-skill report model
-  with stable rule ids and path-sorted ordering. **Consumes the walk's items:**
-  decides how `CollectionItem::Unreadable` and each `FrontmatterStatus`
-  (`Missing`/`Unclosed`/`Invalid`) become findings; consider whether a
-  permission-denied *subtree* also surfaces (signal `walk-unreadable-dirs`).
+- [~] SPEC-003 (design) — Finding + `Severity` + sectioned N-skill `Report` model
+  with stable rule ids, path-sorted sections, `Report::from_collection(collection,
+  rule_fn)` assembly (Unreadable → `file.unreadable` error; `rule_fn` seam for
+  STAGE-002), and `exit_code(strict)`. **Closes STAGE-001.** (`FrontmatterStatus` →
+  findings and the perm-denied-subtree question are deferred to the rules that
+  consume `rule_fn`, per the spec's Out-of-scope + signal `walk-unreadable-dirs`.)
 
-**Count:** 2 shipped / 0 active / 1 pending
+**Count:** 2 shipped / 1 in design / 0 pending
 
 ## Design Notes
 
