@@ -79,12 +79,56 @@ run produces an error-class finding for that file and does **not** abort the run
 - `rule` values are the stable ids from the STAGE-002 catalog.
 - `line`/`field` are best-effort and may be absent where not cheaply available.
 
-## `--sarif` output (STAGE-003)
+## `--sarif` output (SPEC-008, shipped)
 
-SARIF 2.1.0: each rule id becomes a `reportingDescriptor`; each finding a
-`result` with `level` mapped from severity (`error`→`error`, `warning`→`warning`,
-`info`→`note`) and a `physicalLocation` pointing at the `SKILL.md`. Enables GitHub
-code-scanning annotations via the shipped Action.
+A SARIF 2.1.0 log (mutually exclusive with `--json`; same exit-code contract as
+the other formats). Pure render over the same `Report` `--json` uses — no new
+analysis.
+
+```json
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "skillport",
+          "informationUri": "https://github.com/jysf/skillport",
+          "version": "0.1.0",
+          "rules": [
+            { "id": "name.charset" },
+            { "id": "description.required" }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "name.charset",
+          "level": "error",
+          "message": { "text": "'name' may only contain lowercase letters, digits, and hyphens (invalid: MS!)" },
+          "locations": [
+            { "physicalLocation": { "artifactLocation": { "uri": "lint-fixtures/bad/My-Skill/SKILL.md" } } }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- **`level` mapping (DEC-003):** `error`→`error`, `warning`→`warning`,
+  `info`→`note` (SARIF has no `"info"` level).
+- **`runs[0].tool.driver.rules`** is the **distinct** rule ids present in the
+  report, sorted by id, deduped.
+- **`runs[0].results`** has one entry per finding, in the report's existing
+  order (path-sorted sections, deterministically ordered findings within each
+  — never reordered by the emitter). `locations[0].physicalLocation.region.startLine`
+  is present when `finding.line` is `Some`, absent otherwise.
+- A clean report emits `results: []` and `rules: []` — still a valid SARIF log.
+- Enables GitHub code-scanning annotations once uploaded by a CI workflow (a
+  later STAGE-003 spec produces that workflow — this spec only produces valid
+  SARIF).
 
 ## Stability / "auth"
 
