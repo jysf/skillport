@@ -103,14 +103,14 @@ doc work, not a rushed add-on.
   docs.claude.com; encode the `--target claude` set with source comments;
   resolve the `allowed-tools.format` downgrade question from the docs.
 - [ ] (not yet written) — Real-tokenizer `body.size` (+ DEC for the crate).
-- [~] SPEC-008 (design) — `--sarif` emitter (SARIF 2.1.0) over the sectioned report:
+- [x] SPEC-008 (shipped 2026-07-18, PR #8) — `--sarif` emitter (SARIF 2.1.0):
   `emit::sarif` + `--sarif` flag (mutually exclusive with `--json`); level map
-  info→note; no new dep (serde_json). Drops into GitHub code-scanning.
+  info→note; distinct/sorted rules; no new dep. Drops into GitHub code-scanning.
 - [ ] (not yet written) — GitHub Action / CI workflow wrapping the binary.
 - [ ] (not yet written) — README (rule ids/severities/flags) + per-rule tests +
   good/bad fixtures + the zero-findings-on-a-perfect-skill test.
 
-**Count:** 0 shipped / 0 active / 5 pending
+**Count:** 1 shipped / 0 active / 4 pending
 
 ## Design Notes
 

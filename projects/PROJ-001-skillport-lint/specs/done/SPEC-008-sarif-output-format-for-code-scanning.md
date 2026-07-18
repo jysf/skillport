@@ -7,7 +7,7 @@
 task:
   id: SPEC-008
   type: story                      # epic | story | task | bug | chore
-  cycle: design                    # frame | design | build | verify | ship
+  cycle: ship  # frame | design | build | verify | ship
   blocked: false
   priority: high
   complexity: M                    # S | M | L  (L means split it)
@@ -57,15 +57,32 @@ cost:
     - cycle: build
       agent: claude-sonnet-5
       interface: claude-code
+      tokens_total: 100137
+      estimated_usd: 0.66
+      duration_minutes: 11
+      recorded_at: 2026-07-18
+      notes: "metered Sonnet build subagent; tokens_total = subagent_tokens. estimated_usd = tokens x repo rate 6.60 (order-of-magnitude). duration wall-clock."
+    - cycle: verify
+      agent: claude-opus-4-8
+      interface: claude-code
+      tokens_total: 77506
+      estimated_usd: 0.51
+      duration_minutes: 13
+      recorded_at: 2026-07-18
+      notes: "metered Opus verify subagent (independent review incl. running the binary + a main worktree regression diff; APPROVED, 0 punch-list)."
+    - cycle: ship
+      agent: claude-opus-4-8
+      interface: claude-code
       tokens_total: null
       estimated_usd: null
       duration_minutes: null
       recorded_at: 2026-07-18
-      notes: "metered subagent; orchestrator fills real tokens_total/duration/estimated_usd from the Agent result at ship"
+      notes: "main-loop, not separately metered (ship cycle)"
   totals:
-    tokens_total: 0
-    estimated_usd: 0
-    session_count: 0
+    tokens_total: 177643
+    estimated_usd: 1.17
+    session_count: 4
+shipped_at: 2026-07-18
 ---
 
 # SPEC-008: sarif output format for code scanning
@@ -292,16 +309,21 @@ Process-focused: how did the build go? What friction did the spec create?
 from the process-focused build reflection above.*
 
 1. **What would I do differently next time?**
-   — <answer>
+   — Nothing — the emitter DTO pattern from SPEC-005 made this a clean, low-risk
+   render; pinning the exact SARIF shape + level mapping in the spec meant verify
+   could check byte-for-byte against a standard. The `emit` module is now a tidy
+   three-format renderer (human / json / sarif) with no format logic leaking into
+   `report.rs`.
 
 2. **Does any template, constraint, or decision need updating?**
-   — <answer — if yes but not done this session, record it in
-   `/guidance/signals.yaml`: `type: lesson` (with its N-count) for a recurring
-   coding pattern, `type: process-debt` for tooling/process friction. A close
-   then forces the decision. See `docs/signals.md`.>
+   — No. `serde_json` (DEC-008) already covered the dep; no new decision. SARIF's
+   own `version: 2.1.0` is the standard's, separate from our `--json schema: 1`.
 
 3. **Is there a follow-up spec I should write now before I forget?**
-   — <answer>
+   — The **GitHub Action** that *uploads* the SARIF to code-scanning is a natural
+   pairing (already in the STAGE-003 backlog). The remaining STAGE-003 specs:
+   `--target claude` (needs primary-doc verification — DEC-002), real-tokenizer
+   `body.size`, the Action, and the README rule-id/severity table.
 
 4. **Where was the worst defect caught?** — one word from a fixed vocabulary so
    the defect-escape distribution is greppable across specs:
