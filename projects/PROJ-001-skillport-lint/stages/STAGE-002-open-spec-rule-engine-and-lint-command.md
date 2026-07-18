@@ -113,13 +113,14 @@ open-spec-backed rules are firm; per DEC-003 nothing heuristic is error-level.
 > Proposed decomposition — the Design cycle turns these into specs via
 > `just new-spec "<title>" STAGE-002`. Not yet scaffolded.
 
-- [~] SPEC-004 (design) — Rule engine (`lint_skill` = the `rule_fn`) + frontmatter
-  presence (three `frontmatter.*` ids) + `name.*` + `description.*` +
-  `compatibility.length`. Locks the empty-`Present` decision (name/description-
-  required, not frontmatter.missing).
+- [x] SPEC-004 (shipped 2026-07-18, PR #4) — Rule engine (`lint_skill` = the
+  `rule_fn`) + frontmatter presence (three `frontmatter.*` ids) + `name.*` +
+  `description.*` + `compatibility.length`. Locked the empty-`Present` decision.
 - [ ] (not yet written) — SPEC-005: `metadata.*`, `allowed-tools.format`, `body.*`
   (`body.size` line-count only here; tokenizer is STAGE-003), `frontmatter.unknown`
-  (against the open field set; `--target` widening is STAGE-003).
+  (against the open field set; `--target` widening is STAGE-003). **Also:** add
+  `compatibility.type` (non-string, deferred from SPEC-004) and tighten
+  `name.charset` to ASCII if the spec text confirms (signal `name-charset-ascii`).
 - [ ] (not yet written) — `lint` command (clap) wiring walk → `lint_skill` →
   `Report::from_collection`, single/folder/tree.
 - [ ] (not yet written) — Human + `--json` emitters, exit codes, `--strict`.
@@ -129,7 +130,7 @@ open-spec-backed rules are firm; per DEC-003 nothing heuristic is error-level.
 - [ ] (not yet written) — decide whether a permission-denied subtree → finding
   (signal `walk-unreadable-dirs`), alongside `file.unreadable`.
 
-**Count:** 0 shipped / 1 in design / 5 pending
+**Count:** 1 shipped / 0 active / 5 pending
 
 ## Design Notes
 
