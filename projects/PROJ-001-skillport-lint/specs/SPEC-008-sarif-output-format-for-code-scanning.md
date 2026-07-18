@@ -20,7 +20,7 @@ repo:
 
 agents:
   architect: claude-opus-4-8      # design cycle (this orchestrator session)
-  implementer: claude-sonnet-4-6  # build runs as a Sonnet subagent (cost); updated with the real model
+  implementer: claude-sonnet-5    # build runs as a Sonnet subagent (cost); updated with the real model
   created_at: 2026-07-18
 
 references:
@@ -54,6 +54,14 @@ cost:
       duration_minutes: null
       recorded_at: 2026-07-18
       notes: "main-loop, not separately metered (design cycle)"
+    - cycle: build
+      agent: claude-sonnet-5
+      interface: claude-code
+      tokens_total: null
+      estimated_usd: null
+      duration_minutes: null
+      recorded_at: 2026-07-18
+      notes: "metered subagent; orchestrator fills real tokens_total/duration/estimated_usd from the Agent result at ship"
   totals:
     tokens_total: 0
     estimated_usd: 0
@@ -248,28 +256,33 @@ Written now (design).
 
 *Filled in at the end of the **build** cycle, before advancing to verify.*
 
-- **Branch:**
-- **PR (if applicable):**
-- **All acceptance criteria met?** yes/no
+- **Branch:** `feat/spec-008-sarif`
+- **PR (if applicable):** none yet (build cycle only)
+- **All acceptance criteria met?** yes
 - **New decisions emitted:**
-  - `DEC-NNN` — <title> (if any)
+  - none
 - **Deviations from spec:**
-  - [list]
+  - None from the required shape/behavior. Added a doc-comment tweak to
+    `src/main.rs`/`src/lib.rs` module docs to mention `--sarif` (not
+    functional, keeps the module docs accurate).
 - **Follow-up work identified:**
-  - [any new specs for the stage's backlog]
+  - The GitHub Action / CI workflow that uploads the SARIF (explicitly out of
+    scope here) — next STAGE-003 backlog item.
 
 ### Build-phase reflection (3 questions, short answers)
 
 Process-focused: how did the build go? What friction did the spec create?
 
 1. **What was unclear in the spec that slowed you down?**
-   — <answer>
+   — Nothing significant; the exact SARIF shape, level mapping, and DTO
+   naming were fully specified, so implementation was close to mechanical.
 
 2. **Was there a constraint or decision that should have been listed but wasn't?**
-   — <answer>
+   — No. DEC-003/DEC-005 and the "mirror `emit::json`" instruction covered
+   everything needed.
 
 3. **If you did this task again, what would you do differently?**
-   — <answer>
+   — Nothing; would follow the same DTO-mirroring approach again.
 
 ---
 

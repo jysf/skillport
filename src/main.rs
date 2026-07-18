@@ -1,9 +1,10 @@
 //! Binary entry point: the `skillport` CLI.
 //!
-//! `skillport lint <PATH> [--json] [--strict]` (SPEC-005, `docs/api-contract.md`):
-//! walk `<PATH>` into a [`skillport::Collection`], run [`skillport::lint_skill`]
-//! over it via [`skillport::Report::from_collection`], print a human report
-//! (default) or `--json`, and exit with the CI contract code
+//! `skillport lint <PATH> [--json | --sarif] [--strict]` (SPEC-005/SPEC-008,
+//! `docs/api-contract.md`): walk `<PATH>` into a [`skillport::Collection`], run
+//! [`skillport::lint_skill`] over it via [`skillport::Report::from_collection`],
+//! print a human report (default), `--json`, or `--sarif` (mutually exclusive
+//! with `--json`), and exit with the CI contract code
 //! (`Report::exit_code(strict)`; `2` for a usage error). Results go to
 //! **stdout**, diagnostics/usage errors to **stderr** (machine consumers read
 //! stdout only). `Commands` is a subcommand enum so `audit` (PROJ-002) can be
@@ -35,6 +36,9 @@ enum Commands {
         /// Emit the stable JSON schema instead of human-readable text.
         #[arg(long)]
         json: bool,
+        /// Emit SARIF 2.1.0 for code-scanning ingestion. Mutually exclusive with `--json`.
+        #[arg(long, conflicts_with = "json")]
+        sarif: bool,
         /// Treat warnings as failures (affects exit code only).
         #[arg(long)]
         strict: bool,
@@ -45,12 +49,17 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Lint { path, json, strict } => lint(&path, json, strict),
+        Commands::Lint {
+            path,
+            json,
+            sarif,
+            strict,
+        } => lint(&path, json, sarif, strict),
     }
 }
 
 /// Run the `lint` subcommand and return the process exit code.
-fn lint(path: &Path, json: bool, strict: bool) -> ExitCode {
+fn lint(path: &Path, json: bool, sarif: bool, strict: bool) -> ExitCode {
     // Usage error BEFORE walking (`walk` is total and returns an empty
     // collection for a missing path — the CLI must check existence itself,
     // per the spec's exit-code table and Notes).
@@ -62,7 +71,9 @@ fn lint(path: &Path, json: bool, strict: bool) -> ExitCode {
     let collection = walk(path);
     let report = Report::from_collection(&collection, skillport::lint_skill);
 
-    if json {
+    if sarif {
+        println!("{}", emit::sarif(&report));
+    } else if json {
         println!("{}", emit::json(&report, None));
     } else {
         print!("{}", emit::human(&report));

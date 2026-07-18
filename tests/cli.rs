@@ -128,6 +128,61 @@ fn strict_flips_warning_only_fixture_to_exit_1() {
     );
 }
 
+#[test]
+fn lint_sarif_on_bad_fixture_is_valid_json_exit_1_mentions_name_charset() {
+    let out = run(&[fixture("lint-fixtures/bad").to_str().unwrap(), "--sarif"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = string(&out.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout was not valid SARIF JSON ({e}): {stdout}"));
+    assert_eq!(value["version"], "2.1.0");
+    assert!(
+        stdout.contains("name.charset"),
+        "expected stdout to mention name.charset, got: {stdout}"
+    );
+}
+
+#[test]
+fn lint_sarif_on_good_fixture_exits_0_with_empty_results() {
+    let out = run(&[fixture("lint-fixtures/good").to_str().unwrap(), "--sarif"]);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {:?}",
+        string(&out.stderr)
+    );
+    let stdout = string(&out.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("not valid JSON ({e}): {stdout}"));
+    assert_eq!(
+        value["runs"][0]["results"].as_array().unwrap().len(),
+        0,
+        "expected empty results for the good fixture"
+    );
+}
+
+#[test]
+fn lint_sarif_and_json_together_exits_2_with_empty_stdout() {
+    let out = run(&[
+        fixture("lint-fixtures/good").to_str().unwrap(),
+        "--sarif",
+        "--json",
+    ]);
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        out.stdout.is_empty(),
+        "expected empty stdout, got: {:?}",
+        string(&out.stdout)
+    );
+    assert!(
+        !out.stderr.is_empty(),
+        "expected a clap usage-error message on stderr"
+    );
+}
+
 fn string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
