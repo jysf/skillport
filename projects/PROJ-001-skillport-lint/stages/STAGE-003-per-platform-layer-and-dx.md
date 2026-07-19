@@ -102,7 +102,9 @@ doc work, not a rushed add-on.
 - [ ] (not yet written) — Verify Claude's recognized frontmatter fields from
   docs.claude.com; encode the `--target claude` set with source comments;
   resolve the `allowed-tools.format` downgrade question from the docs.
-- [ ] (not yet written) — Real-tokenizer `body.size` (+ DEC for the crate).
+- [~] SPEC-010 (design) — Real-tokenizer `body.size` (info): `body_token_count`
+  via `tiktoken-rs` (proxy; DEC-010), threshold ~5000, added to `check_body`.
+  Completes the open-spec catalog (100%).
 - [x] SPEC-008 (shipped 2026-07-18, PR #8) — `--sarif` emitter (SARIF 2.1.0):
   `emit::sarif` + `--sarif` flag (mutually exclusive with `--json`); level map
   info→note; distinct/sorted rules; no new dep. Drops into GitHub code-scanning.
