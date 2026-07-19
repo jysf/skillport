@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Validate and audit agent SKILL.md files (tolerant, lossless parser substrate)."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/agentskills/skillport"
+repository = "https://github.com/jysf/skillport"
 
 [dependencies]
 # YAML frontmatter parsing. NOT serde_yaml (deprecated/unmaintained). See DEC-007.

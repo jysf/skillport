@@ -104,12 +104,16 @@ linter now would force that rewrite later (DEC-004).
   `rules::lint_skill` + the full open catalog, the `skillport lint` CLI (human +
   `--json`, exit codes, `--strict`), and `dir.unreadable` coverage. 4 specs
   (SPEC-004…007), ~95 tests, all APPROVED first pass. `skillport lint` is runnable.
-- [ ] STAGE-003 (proposed, next) — Per-platform layer + DX: `--target claude` (verified
-  from primary docs); real-tokenizer `body.size`; `--sarif`; GitHub Action;
-  README with rule ids/severities; per-rule tests + fixtures + the
-  zero-findings-on-a-perfect-skill test.
+- [~] STAGE-003 (active) — Per-platform layer + DX: `--sarif` ✅ (SPEC-008), GitHub
+  Action + CI ✅ (SPEC-009); remaining: `--target claude` (verified from primary
+  docs), real-tokenizer `body.size`, README rule-id/severity table + fixtures +
+  the zero-findings-on-a-perfect-skill test.
+- [ ] STAGE-004 (proposed) — **Release & distribution** (DEC-009): GitHub Releases
+  (cross-platform prebuilt binaries) + crates.io; Action downloads the release
+  binary; cut v0.1.0. Homebrew deferred until an Apple Developer key is available.
+  Cut **after** STAGE-003. Several steps are human-only (cargo publish, tag push).
 
-**Count:** 2 shipped / 0 active / 1 pending
+**Count:** 2 shipped / 1 active / 2 pending (STAGE-003 finishing, then STAGE-004 release)
 
 ## Dependencies
 
