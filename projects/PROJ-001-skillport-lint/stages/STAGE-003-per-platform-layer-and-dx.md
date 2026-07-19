@@ -106,7 +106,9 @@ doc work, not a rushed add-on.
 - [x] SPEC-008 (shipped 2026-07-18, PR #8) — `--sarif` emitter (SARIF 2.1.0):
   `emit::sarif` + `--sarif` flag (mutually exclusive with `--json`); level map
   info→note; distinct/sorted rules; no new dep. Drops into GitHub code-scanning.
-- [ ] (not yet written) — GitHub Action / CI workflow wrapping the binary.
+- [~] SPEC-009 (design) — reusable composite **GitHub Action** (`skillport lint
+  --sarif` + upload to code-scanning) + this repo's **Rust CI** (fmt/clippy/test)
+  + a dogfood job + README "Use in CI". YAML/CI only; no Rust change.
 - [ ] (not yet written) — README (rule ids/severities/flags) + per-rule tests +
   good/bad fixtures + the zero-findings-on-a-perfect-skill test.
 
