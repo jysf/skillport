@@ -104,16 +104,19 @@ linter now would force that rewrite later (DEC-004).
   `rules::lint_skill` + the full open catalog, the `skillport lint` CLI (human +
   `--json`, exit codes, `--strict`), and `dir.unreadable` coverage. 4 specs
   (SPEC-004…007), ~95 tests, all APPROVED first pass. `skillport lint` is runnable.
-- [~] STAGE-003 (active) — Per-platform layer + DX: `--sarif` ✅ (SPEC-008), GitHub
-  Action + CI ✅ (SPEC-009); remaining: `--target claude` (verified from primary
-  docs), real-tokenizer `body.size`, README rule-id/severity table + fixtures +
-  the zero-findings-on-a-perfect-skill test.
-- [ ] STAGE-004 (proposed) — **Release & distribution** (DEC-009): GitHub Releases
+- [x] STAGE-003 (shipped 2026-07-18) — Per-platform layer + DX: `--sarif` (SPEC-008),
+  GitHub Action + CI (SPEC-009), real-tokenizer `body.size` (SPEC-010), verified
+  `--target claude` (SPEC-011), and the rule-reference README + per-rule fixtures +
+  drift-proof catalog + complete CLAUDE_KEYS (SPEC-012). 5 specs (SPEC-008…012), all
+  APPROVED first pass. `skillport lint` is differentiated, documented, and CI-ready.
+- [~] STAGE-004 (active) — **Release & distribution** (DEC-009): GitHub Releases
   (cross-platform prebuilt binaries) + crates.io; Action downloads the release
   binary; cut v0.1.0. Homebrew deferred until an Apple Developer key is available.
-  Cut **after** STAGE-003. Several steps are human-only (cargo publish, tag push).
+  Backlog SPEC-013 (Phase-0 prep, designed) → SPEC-014 (release workflow) → SPEC-015
+  (crates.io publish) → SPEC-016 (Action speedup) → SPEC-017 (cut v0.1.0). Several
+  steps are human-only (cargo publish, tag push).
 
-**Count:** 2 shipped / 1 active / 2 pending (STAGE-003 finishing, then STAGE-004 release)
+**Count:** 3 shipped / 1 active / 0 pending (STAGE-004 release now in progress)
 
 ## Dependencies
 
