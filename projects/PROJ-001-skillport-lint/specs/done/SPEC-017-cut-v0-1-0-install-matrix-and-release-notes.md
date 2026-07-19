@@ -7,7 +7,7 @@
 task:
   id: SPEC-017
   type: chore                      # epic | story | task | bug | chore
-  cycle: build  # frame | design | build | verify | ship
+  cycle: ship  # frame | design | build | verify | ship
   blocked: false
   priority: high
   complexity: S                    # S | M | L  (L means split it)
@@ -59,15 +59,32 @@ cost:
     - cycle: build
       agent: claude-sonnet-5
       interface: claude-code
+      tokens_total: 84936
+      estimated_usd: 0.56
+      duration_minutes: 14
+      recorded_at: 2026-07-19
+      notes: "metered Sonnet build subagent; tokens_total = subagent_tokens. estimated_usd = tokens x repo rate 6.60. duration wall-clock. README Install matrix + badges + Status + release.yml --generate-notes + RELEASING.md; asset names match SPEC-014, SPEC-012 drift test intact."
+    - cycle: verify
+      agent: claude-opus-4-8
+      interface: claude-code
+      tokens_total: 64627
+      estimated_usd: 0.43
+      duration_minutes: 5
+      recorded_at: 2026-07-19
+      notes: "metered Opus verify subagent; cross-checked all 5 install-matrix asset names vs release.yml (no 404s), confirmed the rule-table drift guard intact + the release.yml diff limited to the notes flag + Cargo.toml still 0.1.0. APPROVED, 0 punch-list."
+    - cycle: ship
+      agent: claude-opus-4-8
+      interface: claude-code
       tokens_total: null
       estimated_usd: null
       duration_minutes: null
       recorded_at: 2026-07-19
-      notes: "metered subagent build; leaving null — orchestrator fills tokens_total/duration/estimated_usd from the Agent result's subagent_tokens at ship, per cost-snippet.md"
+      notes: "main-loop, not separately metered (ship cycle)"
   totals:
-    tokens_total: 0
-    estimated_usd: 0
-    session_count: 0
+    tokens_total: 149563
+    estimated_usd: 0.99
+    session_count: 4
+shipped_at: 2026-07-19
 ---
 
 # SPEC-017: cut v0.1.0 — install matrix + release notes
@@ -291,22 +308,35 @@ Process-focused: how did the build go? What friction did the spec create?
 from the process-focused build reflection above.*
 
 1. **What would I do differently next time?**
-   — <answer>
+   — The highest-risk part of a release-docs spec is docs that *assert facts about other
+   artifacts* — here, install-matrix asset names that must exactly match what the release
+   workflow produces. Making that a mechanical cross-check (README names == release.yml
+   `stage=` naming == install-release.sh map) turned "a user downloads a 404" from a
+   plausible escape into a verified property. Same family as SPEC-012's docs-drift test —
+   when docs mirror machinery, cross-check them, don't eyeball them.
 
 2. **Does any template, constraint, or decision need updating?**
-   — <answer — if yes but not done this session, record it in
-   `/guidance/signals.yaml`: `type: lesson` (with its N-count) for a recurring
-   coding pattern, `type: process-debt` for tooling/process friction. A close
-   then forces the decision. See `docs/signals.md`.>
+   — No. The `docs-drift-as-a-test` lesson (from SPEC-012) is the relevant one and this is
+   arguably a third instance (README install names vs the release workflow) — but here it
+   was a verify-time cross-check rather than a committed test, so I'm not counting it
+   toward the N=3 bar; noting the affinity at the next stage-close walk. The one real
+   discovery worth remembering: the root `CHANGELOG.md` is template-managed, so an app's
+   release notes belong in the GitHub Release (`--generate-notes`), not a root changelog —
+   already captured in RELEASING.md.
 
 3. **Is there a follow-up spec I should write now before I forget?**
-   — <answer>
+   — No more PROJ-001 specs — SPEC-017 is the last. What remains is **not spec work but
+   the human-only release** (push `v0.1.0` → binaries + crates.io publish) and then two
+   closes: **STAGE-004 close** (once the release is confirmed installing on each channel,
+   per DEC-009 step 5) and **PROJ-001 close** (project reflection + dispositioning the
+   long-deferred project-owned process-debt signals). PROJ-002 (`audit`, incl. the newly
+   logged `agents-md-audit` product signal) is the next wave.
 
 4. **Where was the worst defect caught?** — one word from a fixed vocabulary so
    the defect-escape distribution is greppable across specs:
    `design` | `build` | `verify` | `ship` | `escaped` (reached prod/runtime) |
    `none` (clean first try).
-   — <one word>
+   — none
    *(Runtime/operational defects — the escape-prone class — only exist once the
    artifact meets its real host. `escaped` here is a signal to strengthen the
    §12 behavioral pre-flight for that surface.)*
