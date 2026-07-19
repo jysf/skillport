@@ -105,10 +105,12 @@ stage progresses).
   `cargo publish --dry-run` CI guard. Proven by dry-run exit 0. No runtime code / no
   contract change. Crate name `skillport` confirmed free on crates.io (re-confirm at
   SPEC-015). Verify APPROVED, 0 punch-list, clean first try.
-- [ ] (not yet written) SPEC-014 — **Release workflow** (M): `.github/workflows/release.yml`
-  cross-compiling the macOS/Linux/Windows matrix on `v*`, strip + archive + sha256 +
-  attach to the Release; provenance stamp. (Verifiable via a dry-run / `act` or a
-  pre-release tag; the real tag push is human-only.)
+- [~] SPEC-014 (build) — **Release workflow** (M): `.github/workflows/release.yml`
+  cross-compiling the DEC-009 5-target matrix (macOS arm64+x86_64, Linux
+  x86_64-gnu+aarch64-musl, Windows x86_64) on `v*`, strip + archive + sha256 + attach
+  to the Release via `gh`; provenance `build-info.txt`. `workflow_dispatch` dry path
+  builds+uploads artifacts without creating a Release (CI-testable without a tag). No
+  src/contract change; the real tag push is human-only.
 - [ ] (not yet written) SPEC-015 — **crates.io publish** (S/M): finalize packaging +
   a `cargo publish` path (job or documented manual first-publish). **Human-only trigger**
   (`cargo publish` token, irreversible) — Claude prepares, human runs.
