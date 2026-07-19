@@ -113,9 +113,11 @@ stage progresses).
   artifacts without creating a Release. No src/contract change. Verify APPROVED,
   0 punch-list. **Human smoke-test recommended:** trigger a `workflow_dispatch` run
   once (creates no Release) to exercise the full 5-leg matrix before SPEC-017.
-- [ ] (not yet written) SPEC-015 — **crates.io publish** (S/M): finalize packaging +
-  a `cargo publish` path (job or documented manual first-publish). **Human-only trigger**
-  (`cargo publish` token, irreversible) — Claude prepares, human runs.
+- [~] SPEC-015 (build) — **crates.io publish** (S): a tag-gated `publish` job on
+  `release.yml` (`cargo publish --locked` with `CARGO_REGISTRY_TOKEN` secret, version-match
+  guard, skipped on `workflow_dispatch`) + a `RELEASING.md` runbook. **Human-only:** the
+  token secret + the first `cargo publish` + the tag push — Claude prepares, human runs.
+  Crate name `skillport` re-confirmed free (404).
 - [ ] (not yet written) SPEC-016 — **Action speedup** (S): `action.yml` downloads the
   release binary (by tag/OS) with a `cargo install --git` fallback; update the Action's
   README/example.
