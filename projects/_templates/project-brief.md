@@ -16,6 +16,21 @@ repo:
 created_at: YYYY-MM-DD
 shipped_at: null
 
+# OPTIONAL, stamped at close by `just close-project`. `status` is the coarse
+# machine state; this says WHY the work stopped, which is the more interesting
+# signal and the one `cancelled` flattens:
+#   shipped    delivered the thesis
+#   abandoned  stopped; thesis unproven
+#   superseded the thesis moved into another project
+#   parked     may resume (pair with status: on_hold)
+# Open set (the `activity` precedent) — extend it; validate warns, never fails.
+#
+# It is also load-bearing, not decorative: close-project REFUSES to close a
+# project with specs still in flight when you claim `shipped`, and allows it
+# when you say `abandoned`. In-flight specs contradict "shipped"; they are
+# expected in an abandonment.
+closed_reason: null
+
 # Business value. Testable claim, not marketing copy.
 # "Users will love it" is not a thesis; "reducing month-2 churn by
 # making activation faster" is. Leave null only if genuinely unknown.
@@ -24,6 +39,45 @@ value:
   beneficiaries: []                 # 2-4 entries: users, team, function
   success_signals: []               # 3-5 observable outcomes
   risks_to_thesis: []               # 2-4 honest things that could make this wrong
+
+# The OTHER HALF of `value:` above. That block is the prediction, written when
+# you knew least. This is what actually happened, written at close by
+# `just close-project` — the only moment the whole wave is knowable.
+#
+# Without it the template predicts and never scores, which is why "was the idea
+# any good?" has never been answerable across projects. A prediction with no
+# recorded outcome is not a hypothesis; it's a wish.
+#
+# `too-early` is a real, honest answer — some theses need months of use to
+# judge. What is NOT acceptable is leaving it null on a project you claim
+# shipped: close-project refuses that combination.
+value_realized:
+  thesis_held: null                 # yes | partly | no | too-early
+  signals_observed: []              # which success_signals above actually showed up
+  evidence: null                    # one line — the number if you have one, the observation if not
+  notes: null                       # what you'd predict differently next time
+
+# OPTIONAL declared roadmap (DEC-011). Forward intent that is NOT a stage yet —
+# themes and outcomes too coarse or too early to frame. `just roadmap` merges
+# these with the DERIVED roadmap (framed STAGE-*.md files + the Stage Plan
+# below) and emits both via `--json`, so a portfolio tracker reads one surface
+# instead of re-parsing this file.
+#
+# Leave it empty. Most projects never need it: the Stage Plan already says what
+# is coming. Reach for it when intent outlives the current wave.
+#
+#   kind:    pillar | goal        (framed/planned are inferred from files)
+#   horizon: now | next | later   — buckets, because a date you can't hit is
+#                                   worse than a bucket you can
+# An `item:` naming a real STAGE-NNN is reconciled against that stage rather
+# than listed twice; its horizon rides along on the derived row.
+roadmap: []
+# roadmap:
+#   - item: "Weekly & monthly rollup reports"
+#     kind: pillar
+#     horizon: next
+#     resume_when: "after the daily report stabilizes"   # optional trigger
+#     target: null                                       # optional YYYY-MM-DD
 ---
 
 # PROJ-XXX: <Short Title — the wave of work>

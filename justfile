@@ -27,48 +27,17 @@ default:
 # ONE-TIME SETUP
 # ----------------------------------------------------------------------------
 
+# `just init` asks, then confirms; `just init claude-only` (or
+# claude-plus-agents) runs without prompting. See scripts/init.sh.
 # Initialize the repo: pick a variant and scaffold files to the root.
-init:
-    @echo "Spec-driven repo template — init"
-    @echo ""
-    @if [ -f AGENTS.md ]; then \
-        echo "⚠  Already initialized (AGENTS.md exists at repo root)."; \
-        echo "   Init is one-shot: it consumes variants/ when it runs."; \
-        echo "   To start over, restore the repo from git or re-clone."; \
-        exit 1; \
-    fi
-    @if [ ! -d variants ]; then \
-        echo "⚠  variants/ directory is missing."; \
-        echo "   This repo was already initialized (or the template was"; \
-        echo "   modified). Restore from git or re-clone to re-init."; \
-        exit 1; \
-    fi
-    @echo "Pick a variant:"
-    @echo "  1) claude-only         (Claude plays every role; simpler)"
-    @echo "  2) claude-plus-agents  (Claude architects, separate agent implements)"
-    @echo ""
-    @printf "Enter 1 or 2: "
-    @read variant_choice && \
-    if [ "$variant_choice" = "1" ]; then \
-        VARIANT="claude-only"; \
-    elif [ "$variant_choice" = "2" ]; then \
-        VARIANT="claude-plus-agents"; \
-    else \
-        echo "Invalid choice: $variant_choice"; exit 1; \
-    fi && \
-    echo "" && \
-    echo "Scaffolding $VARIANT to repo root..." && \
-    cp -r "variants/$VARIANT/." . && \
-    rm -rf variants/ && \
-    echo "$VARIANT" > .variant && \
-    echo "" && \
-    echo "✓ Done. Your variant: $VARIANT" && \
-    echo "" && \
-    echo "Next steps:" && \
-    echo "  1. Open GETTING_STARTED.md" && \
-    echo "  2. Work through the PROJECT FRAME prompt in FIRST_SESSION_PROMPTS.md" && \
-    echo "  3. Commit the scaffolded repo:" && \
-    echo "       git add . && git commit -m 'chore: initialize spec-driven scaffold'"
+init variant="":
+    @./scripts/init.sh {{quote(variant)}}
+
+# Start a fresh git history for a NEW project (discards the template's history,
+# stamps provenance). Run once after init if you cloned rather than used
+# GitHub's "Use this template". Guarded + interactive; see scripts/fresh-history.sh.
+fresh-start:
+    @./scripts/fresh-history.sh
 
 # List the available variants (useful before init)
 list-variants:
@@ -97,13 +66,23 @@ new-spec TITLE STAGE_ID PROJECT_ID="":
 new-release-spec TITLE STAGE_ID PROJECT_ID="":
     @./scripts/new-spec.sh "{{TITLE}}" "{{STAGE_ID}}" "{{PROJECT_ID}}" --release
 
+# Batch-promote a stage's "(not yet written)" backlog lines into OUTLINE specs
+# at cycle:frame with stable IDs, so depends_on can point at them.
+# Usage: just frame-stage STAGE-NNN [PROJ-NNN] [--dry-run]
+frame-stage STAGE_ID *ARGS:
+    @./scripts/frame-stage.sh "{{STAGE_ID}}" {{ARGS}}
+
 # Scaffold a new stage. Usage: just new-stage "short title" [PROJ-NNN]
 new-stage TITLE PROJECT_ID="":
     @./scripts/new-stage.sh "{{TITLE}}" "{{PROJECT_ID}}"
 
 # Advance a spec's cycle. Usage: just advance-cycle SPEC-NNN verify
-advance-cycle SPEC_ID NEW_CYCLE:
-    @./scripts/advance-cycle.sh "{{SPEC_ID}}" "{{NEW_CYCLE}}"
+#
+# Leaving `verify` also stamps `task.verify_verdict`, inferred from where the
+# spec goes (→ ship = approved, → build = punch-list). Pass `--verdict rejected`
+# for the one distinction the destination can't make for you.
+advance-cycle SPEC_ID NEW_CYCLE *FLAGS:
+    @./scripts/advance-cycle.sh "{{SPEC_ID}}" "{{NEW_CYCLE}}" {{FLAGS}}
 
 # Archive a shipped spec: move to done/ and update stage backlog.
 # Usage: just archive-spec SPEC-NNN
@@ -115,10 +94,48 @@ archive-spec SPEC_ID:
 new-patch TITLE PROJECT_ID="":
     @./scripts/new-patch.sh "{{TITLE}}" "{{PROJECT_ID}}"
 
+# Close a project — the mechanical half of the Prompt 1e ritual. Refuses on the
+# three things a close exists to produce: specs still in flight (only when you
+# claim `shipped`), an empty Project-Level Reflection, and signals still
+# awaiting a project-close disposition. Stamps shipped_at and prints the final
+# cost / value / decision-density rollup. `--dry-run` changes nothing.
+# Usage: just close-project PROJ-NNN [--dry-run] [--json]
+close-project *ARGS:
+    @./scripts/close-project.sh {{ARGS}}
+
 # Archive a shipped patch: move to patches/done/ (no stage bookkeeping).
 # Usage: just archive-patch PATCH-NNN
 archive-patch PATCH_ID:
     @./scripts/archive-patch.sh "{{PATCH_ID}}"
+
+# Scaffold a delegation handoff (claude-plus-agents). ONE per delegated CYCLE —
+# with build and verify on different agents you get two per spec. Picks to_agent
+# from .repo-context tier_map.<cycle>. Usage: just new-handoff SPEC-NNN build|verify
+new-handoff SPEC_ID CYCLE:
+    @./scripts/new-handoff.sh "{{SPEC_ID}}" "{{CYCLE}}"
+
+# Transcribe agent-reported cost from a spec's handoffs into its cost.sessions.
+# The orchestrator never estimates: the agent that ran the cycle self-reports in
+# its handback: block and this copies it across. Idempotent (stamps synced_at).
+# Exits 1 if any handoff hasn't handed back cleanly. Usage: just handback-sync SPEC-NNN
+handback-sync SPEC_ID *FLAGS:
+    @./scripts/handback-sync.sh "{{SPEC_ID}}" {{FLAGS}}
+
+# Scaffold a spike (the bounded-exploration lane, DEC-012): the phase BEFORE you
+# know the shape. spike -> land; no verify (nothing to verify against). Lives at
+# the repo root — a spike may precede any project.
+#   MODE=question  a timeboxed investigation (default; code is evidence)
+#   MODE=build     a vibe-coding session (code is the deliverable)
+# Every parameter is quoted individually — a `*ARGS` splat would splice raw text
+# into the recipe shell, so a timebox like "2h | then stop" would become a pipe.
+# Usage: just new-spike "the question" [TIMEBOX] [MODE] [PROJ-NNN]
+new-spike TITLE TIMEBOX="1 session" MODE="question" PROJECT_ID="":
+    @./scripts/new-spike.sh "{{TITLE}}" --timebox "{{TIMEBOX}}" --mode "{{MODE}}" "{{PROJECT_ID}}"
+
+# Archive a LANDED spike: move to spikes/done/. Refuses an un-landed spike
+# (no spike.outcome) — the land step is the point. Usage: just archive-spike SPIKE-NNN
+archive-spike SPIKE_ID:
+    @./scripts/archive-spike.sh "{{SPIKE_ID}}"
 
 #   just report daily [--json]         → curated daily report (reports/daily/YYYY-MM-DD.md)
 #   just report weekly [DATE] [--json] → weekly report for the ISO week (reports/weekly/YYYY-WNN.md)
@@ -183,6 +200,27 @@ dash *ARGS:
 backlog *FLAGS:
     @./scripts/backlog.sh {{FLAGS}}
 
+# Assemble OUTWARD-facing release notes from what shipped specs already
+# recorded (each spec's Reflection Q5). Scope: active project, a STAGE-NNN,
+# a PROJ-NNN, or --all. `--prompt` wraps them in a synthesis ask.
+release-notes *ARGS:
+    @./scripts/release-notes.sh {{ARGS}}
+
+# The READY SET: in-flight specs whose `depends_on:` have all shipped
+# and that nobody holds. What to pick up next — and, because it's
+# computed rather than guessed, the safely-parallel batch for sub-agents.
+ready *FLAGS:
+    @./scripts/ready.sh {{FLAGS}}
+
+# Take a spec's fan-out lease so the ready-set skips it and two agents
+# don't grab the same work. Advisory; `--force` steals a held claim.
+claim SPEC WHO *FLAGS:
+    @./scripts/claim.sh claim {{SPEC}} {{WHO}} {{FLAGS}}
+
+# Release a spec's lease.
+unclaim SPEC:
+    @./scripts/claim.sh unclaim {{SPEC}}
+
 # Stage-grained "where is this project going" view: one row per
 # stage in the active project with status, date range, and (for
 # active/upcoming) spec counts.
@@ -195,6 +233,13 @@ roadmap *ARGS:
 specs-by-stage *FLAGS:
     @./scripts/specs-by-stage.sh {{FLAGS}}
 
+# Expected vs actual, per shipped spec: predicted size/tokens against what it
+# took, plus the token band each expected size ACTUALLY landed in. Warn-only —
+# the feedback loop is the value, not the number.
+# Usage: just calibration [--all|--active|PROJ-NNN] [--json]
+calibration *FLAGS:
+    @./scripts/calibration.sh {{FLAGS}}
+
 # Audit decisions: structural lint + scope-conflict warnings (zero
 # deps; a native take on LineSpec-style provenance auditing). Lints
 # front-matter and supersession links across all DEC-* files. Pass
@@ -202,19 +247,30 @@ specs-by-stage *FLAGS:
 decisions-audit *FLAGS:
     @./scripts/decisions-audit.sh {{FLAGS}}
 
+# Regenerate decisions/INDEX.md — one row per DEC (id · title · confidence ·
+# status · project · supersedes), active and superseded split. Derived, never
+# hand-edited; `--check` writes nothing and fails if the committed index is
+# stale, so CI can keep it honest.
+decisions-index *FLAGS:
+    @./scripts/decisions-index.sh {{FLAGS}}
+
+# Find artifact ids used twice: one SPEC/STAGE/PATCH/SPIKE/HANDOFF/DEC number
+# given to two different artifacts across this checkout, other worktrees, and
+# local branches. Run after `git fetch` to include pushed work. `--json`.
+id-audit *FLAGS:
+    @./scripts/id-audit.sh {{FLAGS}}
+
 # Fail if any shipped spec is missing real build/verify cost data
 # (AGENTS.md §4 / docs/cost-tracking.md). Same check the CI `cost-data`
 # job runs; also surfaced in `just status` and `just report-weekly`.
-cost-audit:
-    @./scripts/cost-audit.sh
-
+cost-audit *FLAGS:
+    @./scripts/cost-audit.sh {{FLAGS}}
 # Validate that every spec's front-matter carries the required structural
 # fields with valid values (the schema contract; DEC-001 §1 /
 # docs/schema-reference.md). Exits non-zero on any violation — gate-style,
 # suitable for CI. Cost-on-shipped is enforced separately by `just cost-audit`.
-validate:
-    @./scripts/validate.sh
-
+validate *FLAGS:
+    @./scripts/validate.sh {{FLAGS}}
 # ----------------------------------------------------------------------------
 # HELPERS
 # ----------------------------------------------------------------------------
@@ -248,3 +304,11 @@ build-info *ARGS:
 # Maintainer self-test of the template itself (the app keeps `just test`).
 template-selftest:
     @./scripts/test.sh
+
+# Maintainers, from the template repo: bring an instance's template-managed
+# files up to this template's version (a three-way update per file, based on
+# the instance's VERSION). Dry run by default; --apply writes, --take PATH
+# accepts the template's copy of a reviewed conflict. See CONTRIBUTING.md.
+# Update an instance's template files to this version (template repo only).
+template-update *ARGS:
+    @./scripts/template-update.sh {{ARGS}}

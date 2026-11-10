@@ -17,7 +17,10 @@ task:
   cycle: design                    # frame | design | build | verify | ship
   blocked: false
   priority: high
-  complexity: M                    # a release is rarely trivial; M is the floor
+  complexity: M                    # XS | S | M | L | XL | XXL — the EXPECTED size, set at design
+                                   #   (XL/XXL almost certainly means it's a stage, not a spec)
+  complexity_actual: null          # stamped at ship: what it ACTUALLY took, same scale.
+                                   #   Expected-vs-actual drift is what `just calibration` reads.
 
 project:
   id: PROJ-XXX
@@ -40,6 +43,11 @@ value_link: null
 # Metered cycles (build/verify) require a real tokens_total on a shipped
 # release — same rule as any spec. See AGENTS.md §4, docs/cost-tracking.md.
 cost:
+  # Optional PREDICTION of the total tokens this spec will take, set at
+  # design. Never a gate — its only job is to be compared with the actual
+  # below (`just calibration`), so you learn whether you systematically
+  # under- or over-estimate. null = didn't predict.
+  tokens_estimate: null
   sessions: []
   totals:
     tokens_total: 0
@@ -65,6 +73,24 @@ out in this cut, and the version/tag you intend to publish.
 - **Delivery shapes:** which of {binary · package · service · library} this
   release produces — this decides which pre-flight categories below apply, and
   which version scheme fits (semver for a library/public API; calver otherwise).
+
+## Release Notes
+
+*Outward-facing — written for whoever USES this, not for contributors. Distinct
+from the CHANGELOG (the record of what changed) and from the Reflection below
+(internal learning).*
+
+**Seed it, don't write it from scratch:** run `just release-notes` — it assembles
+each shipped spec's outward outcome (Reflection Q5). Then edit: lead with the
+headline, group related items, drop the SPEC ids. Specs that answered `none` have
+no user-visible outcome and are correctly absent — do not back-fill them.
+
+**Headline:** <the single thing a user most gains from this release>
+
+- <capability — before → after, with the confirming number if one exists>
+- <...>
+
+**Breaking / action required:** <none | what broke and what the user must do>
 
 ## Release cut is two-phase
 
@@ -144,6 +170,12 @@ signing cert that expires, an env var the release runner needs.
 - **Channels published:** <list>
 - **Pre-flight run on:** <the clean host(s) used>
 - **New decisions emitted:** `DEC-NNN` (if any)
+- **Cut record (one line):** the user-facing outcome now live, plus the
+  upgrade/clean-install check that confirms the publish landed — the one line a
+  review or work-log would quote. E.g. *"v0.4.0→v0.5.0 `brew upgrade` clean;
+  MCP-install now first-class; prod DB opened, 189 entries intact."* If the
+  release is pure infra with no user-facing change, say so — a real, greppable
+  outcome, not a blank. **Appended after Phase 2**, by whoever runs the cut.
 
 ---
 

@@ -10,7 +10,20 @@ task:
   cycle: design                    # frame | design | build | verify | ship
   blocked: false
   priority: medium
-  complexity: S                    # S | M | L  (L means split it)
+  complexity: S                    # XS | S | M | L | XL | XXL — the EXPECTED size, set at design
+                                   #   (XL/XXL almost certainly means it's a stage, not a spec)
+  complexity_actual: null          # stamped at ship: what it ACTUALLY took, same scale.
+                                   #   Expected-vs-actual drift is what `just calibration` reads.
+  verify_verdict: null             # approved | punch-list | rejected — the OUTCOME of the verify
+                                   #   cycle, stamped by `just advance-cycle` when the spec leaves
+                                   #   verify (same three verdicts Prompt 4 already returns).
+                                   #   Recorded in front-matter, not just prose, so "verify never
+                                   #   rejects anything" stops being a hunch and becomes a number.
+  verify_rounds: []                # every verify outcome, oldest first, appended by
+                                   #   `just advance-cycle` each time the spec leaves verify.
+                                   #   verify_verdict keeps only the LAST one, so a spec sent
+                                   #   back and then approved read as "approved": irradiance's
+                                   #   field showed 1 pushback where its handoffs showed 5.
 
 project:
   id: PROJ-XXX
@@ -32,6 +45,15 @@ references:
   constraints: []
   related_specs: []
 
+# Blocking dependencies: specs that must SHIP before this one can start.
+# Distinct from references.related_specs (informational). Feeds the ready-set
+# (`just ready`) and safe fan-out. Optional; [] = no blockers.
+depends_on: []                     # e.g. [SPEC-002]
+
+# Fan-out lease — who/what holds this spec now (`just claim` / `just unclaim`).
+# Advisory; null = free. The hard lock for parallel agents is the worktree/branch.
+claimed_by: null
+
 # One sentence on what this spec contributes to its stage's
 # value_contribution. For plumbing: "infrastructure enabling
 # STAGE-XXX's <capability>". Optional; null is acceptable.
@@ -46,6 +68,11 @@ value_link: null
 # See AGENTS.md §4 and docs/cost-tracking.md. interface: claude-code |
 # claude-ai | api | ollama | other.
 cost:
+  # Optional PREDICTION of the total tokens this spec will take, set at
+  # design. Never a gate — its only job is to be compared with the actual
+  # below (`just calibration`), so you learn whether you systematically
+  # under- or over-estimate. null = didn't predict.
+  tokens_estimate: null
   sessions: []
   totals:
     tokens_total: 0
@@ -78,6 +105,8 @@ sentences, split the spec.
 - **Files created:** `path/to/new.ext` — purpose
 - **Files modified:** `path/to/existing.ext` — what changes
 - **New exports:** <names and signatures>
+- **New flags / options:** each flag's accepted values **and its default** — an
+  unstated default makes build guess.
 - **Database changes:** <migrations>
 
 ## Acceptance Criteria
@@ -186,3 +215,12 @@ from the process-focused build reflection above.*
    *(Runtime/operational defects — the escape-prone class — only exist once the
    artifact meets its real host. `escaped` here is a signal to strengthen the
    §12 behavioral pre-flight for that surface.)*
+
+5. **What can a user do now that they couldn't before?** — one sentence,
+   before → after; quote the confirming number if one exists, name the outcome
+   if not. Write `none` if this spec has no user-visible outcome — that is a
+   real, greppable result, not a blank. This is the line a downstream work-log's
+   `impact` field is transcribed from, and both halves are already written above
+   (## Context is the before, ## Goal is the after): confirm the prediction,
+   don't reconstruct it from memory.
+   — <answer | none>
