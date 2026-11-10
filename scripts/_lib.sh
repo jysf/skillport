@@ -43,6 +43,38 @@ require_initialized() {
     fi
 }
 
+# Where DEC-* files live. A scaffolded instance keeps them at the repo root in
+# `decisions/`; the TEMPLATE repo keeps its own under `docs/decisions/`, because
+# its root is the scaffold surface rather than a project. Root wins when both
+# exist, so an instance's behavior is unchanged.
+#
+# Why this fallback exists: without it the decisions governing the template
+# itself get zero structural checking — which is exactly how the DEC schema
+# forked between the two copies (status/deciders/date, and `type: architecture`
+# on 11 of 13 files, out of the enum the auditor would have caught).
+decisions_dir() {
+    if [ -d "${REPO_ROOT}/decisions" ]; then
+        printf '%s' "${REPO_ROOT}/decisions"
+    elif [ -d "${REPO_ROOT}/docs/decisions" ]; then
+        printf '%s' "${REPO_ROOT}/docs/decisions"
+    else
+        printf '%s' "${REPO_ROOT}/decisions"   # canonical default; callers tolerate it missing
+    fi
+}
+
+# Guard for the DEC-facing commands, which are the only ones that work in BOTH
+# contexts: a scaffolded instance (AGENTS.md at root) and the template repo
+# itself (no AGENTS.md, but `variants/` + `VERSION` + its own docs/decisions/).
+# Every other command still requires a full instance.
+require_decisions_context() {
+    [ -f "${REPO_ROOT}/AGENTS.md" ] && return 0
+    if [ -f "${REPO_ROOT}/VERSION" ] && [ -d "${REPO_ROOT}/variants" ] \
+        && [ -d "${REPO_ROOT}/docs/decisions" ]; then
+        return 0
+    fi
+    die "Repo not initialized. Run 'just init' first."
+}
+
 # Get the active variant (claude-only or claude-plus-agents).
 get_variant() {
     if [ -f "${REPO_ROOT}/.variant" ]; then
@@ -101,8 +133,10 @@ get_active_project() {
     fi
     # Non-example PROJ-* dirs, lowest number first.
     local dirs
+    # `|| true`: with only the example project, grep -v matches nothing and
+    # exits 1, which killed any caller that ran this outside a $(…) subshell.
     dirs=$(find "${REPO_ROOT}/projects" -maxdepth 1 -type d -name "PROJ-*" 2>/dev/null \
-           | grep -v "example" | sort)
+           | grep -v "example" | sort || true)
     # Prefer a project explicitly marked `status: active`. Without this, a
     # SHIPPED earlier wave silently captures every default-scoped command once a
     # second project exists — `just status`/`cost-audit`/`backlog` would target
@@ -117,17 +151,26 @@ get_active_project() {
 ${dirs}
 EOF
     # No project marked active → fall back to the lowest-numbered non-example.
-    [ -n "$first" ] || first=$(printf '%s\n' "$dirs" | head -n1)
+    [ -n "$first" ] || first=$(printf '%s\n' "$dirs" | sed -n 1p)
     # Still nothing → fall back to the example project.
     if [ -z "$first" ]; then
         first=$(find "${REPO_ROOT}/projects" -maxdepth 1 -type d -name "PROJ-*" 2>/dev/null \
-                | sort | head -n1)
+                | sort | sed -n 1p)
     fi
     if [ -z "$first" ]; then
         die "No projects found in ./projects/. Create one by copying projects/_templates/project-brief.md into projects/PROJ-NNN-<slug>/brief.md (see GETTING_STARTED.md)."
     fi
     basename "$first"
 }
+
+# True when at least one projects/PROJ-* directory exists. A fresh scaffold has
+# none (init removes the example project), and the commands a new repo runs
+# first (status, dash, info, and cost-audit in its CI) must report that state
+# rather than die on it.
+has_projects() {
+    [ -n "$(find "${REPO_ROOT}/projects" -maxdepth 1 -type d -name 'PROJ-*' 2>/dev/null | sed -n 1p)" ]
+}
+NO_PROJECTS_HINT="No projects yet. Create the first: copy projects/_templates/project-brief.md to projects/PROJ-001-<slug>/brief.md (GETTING_STARTED.md, step 3)."
 
 # Resolve a project id/name to its directory, deterministically.
 #   $1 = optional PROJ-NNN, a full dir name, or empty (→ active project).
@@ -160,32 +203,120 @@ Pass the full directory name (e.g. ${pid}-<slug>) to disambiguate."
     printf '%s\n' "$matches"
 }
 
-# Return the next ID for a given prefix (SPEC, STAGE, PROJ, DEC, HANDOFF)
-# across the entire repo (or within a project, for SPEC/STAGE/HANDOFF).
-# Usage: next_id SPEC ./projects/PROJ-001-foo
+# --- Artifact ids across branches and worktrees ------------------------------
+# A new id must be free everywhere it could later be merged from, not just in
+# this checkout. Minting from the working tree alone collided across branches at
+# least 7 times in irradiance; one (DEC-028) reached history on two branches.
+#
+# Directories, relative to a checkout's root, that hold id-bearing artifacts.
+# DECs follow decisions_dir(): an instance carrying the template's own DECs in
+# docs/decisions/ would otherwise report each number as used twice.
+_id_artifact_dirs() {
+    local d
+    d=$(decisions_dir)
+    printf 'projects %s\n' "${d#"$REPO_ROOT"/}"
+}
+
+# This checkout's root as git spells it, so it compares equal to the paths
+# `git worktree list` prints (on macOS /var is a symlink to /private/var).
+_checkout_root() {
+    git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s\n' "$REPO_ROOT"
+}
+
+# Keep only primary artifacts carrying an id for <prefix>. Dropped: tests/
+# (oracle fixtures like SPEC-900 made next_id mint SPEC-901 in irradiance),
+# prompts/ and *-timeline.md (companions that share their spec's id), and
+# _templates/. Input and output lines are "<source>\t<path>".
+_id_artifact_filter() {
+    awk -F'\t' -v p="$1" '
+        { n = split($2, seg, "/"); base = seg[n] }
+        base !~ ("^" p "-[0-9]+") { next }
+        base ~ /-timeline\.md$/ { next }
+        $2 ~ /(^|\/)(tests|prompts|_templates)\// { next }
+        { print }'
+}
+
+# Every artifact with a <prefix> id that a new id could clash with, one per
+# line as "<source>\t<path relative to its checkout root>". <source> is:
+#   worktree:<abs path>  files on disk in this or any other worktree of the
+#                        repo, uncommitted ones included
+#   ref:<name>           files added on a local branch or remote-tracking ref
+#                        and not in HEAD. Refs are read as they are; nothing is
+#                        fetched, so a teammate's unpushed work stays invisible.
+# Outside git, only this checkout is scanned.
+id_artifact_paths() {
+    local prefix="$1" worktrees w d dirs
+    dirs=$(_id_artifact_dirs)
+    worktrees=$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' || true)
+    [ -n "$worktrees" ] || worktrees=$(_checkout_root)
+    {
+        printf '%s\n' "$worktrees" | while IFS= read -r w; do
+            for d in $dirs; do
+                [ -d "$w/$d" ] || continue
+                find "$w/$d" -type f -name "${prefix}-[0-9]*.md" 2>/dev/null \
+                    | awk -v w="$w" '{ print "worktree:" w "\t" substr($0, length(w) + 2) }'
+            done
+        done
+        # One git process for every ref: files added on commits HEAD lacks.
+        # --no-renames so a renamed artifact shows up under its new name.
+        if git -C "$REPO_ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+            # shellcheck disable=SC2086  # the dir list is meant to split
+            git -C "$REPO_ROOT" log --source --branches --remotes --not HEAD \
+                --no-renames --diff-filter=A --name-only --format='@%S' \
+                -- $dirs 2>/dev/null \
+                | awk '/^@/ { src = substr($0, 2); next } NF { print "ref:" src "\t" $0 }' \
+                || true
+        fi
+    } | _id_artifact_filter "$prefix"
+}
+
+# The numeric part of an artifact id in a path: .../SPEC-012-foo.md -> 12.
+# Reads "<source>\t<path>" lines; prints "<number>\t<source>\t<path>".
+_id_number_column() {
+    awk -F'\t' -v p="$1" '{
+        b = $2; sub(/.*\//, "", b); sub("^" p "-", "", b)
+        match(b, /^[0-9]+/); print (substr(b, 1, RLENGTH) + 0) "\t" $0 }'
+}
+
+# Return the next free id for a prefix (SPEC, STAGE, PATCH, SPIKE, HANDOFF):
+# one past the highest id in this checkout, any other worktree, or any local
+# ref. When the highest one is somewhere else, say so on stderr, so the jump
+# in numbering is explained rather than silent.
+# Usage: next_id SPEC [./projects/PROJ-001-foo]   (dir limits the scan)
 next_id() {
-    local prefix="$1"
-    local search_dir="${2:-$REPO_ROOT}"
-    local max
-    max=$(find "$search_dir" -type f -name "${prefix}-*.md" 2>/dev/null \
-          | sed -E "s|.*/${prefix}-([0-9]+).*|\\1|" \
-          | sort -n \
-          | tail -n1 || true)
-    if [ -z "$max" ]; then
-        printf "%s-%03d" "$prefix" 1
-    else
-        # Strip leading zeros for arithmetic, then reformat.
-        max=$((10#$max))
-        printf "%s-%03d" "$prefix" $((max + 1))
+    local prefix="$1" search_dir="${2:-$REPO_ROOT}" under="" here result max mine src
+    [ "$search_dir" = "$REPO_ROOT" ] || under="${search_dir#"$REPO_ROOT"/}/"
+    here="worktree:$(_checkout_root)"
+    result=$(id_artifact_paths "$prefix" | _id_number_column "$prefix" | awk -F'\t' \
+        -v under="$under" -v here="$here" '
+        under != "" && index($3, under) != 1 { next }
+        $1 > max { max = $1; src = $2 }
+        $2 == here && $1 > mine { mine = $1 }
+        END { printf "%d\t%d\t%s\n", max, mine, src }')
+    max=$(printf '%s' "$result" | cut -f1)
+    mine=$(printf '%s' "$result" | cut -f2)
+    src=$(printf '%s' "$result" | cut -f3)
+    if [ "$max" -gt "$mine" ]; then
+        printf '%s note: %s-%03d already exists outside this checkout (%s); using %s-%03d.\n' \
+            "${YELLOW}⚠${RESET}" "$prefix" "$max" "$src" "$prefix" $((max + 1)) >&2
     fi
+    printf "%s-%03d" "$prefix" $((max + 1))
 }
 
 # Slugify a string. "Foo Bar Baz" -> "foo-bar-baz"
+# Capped at SLUG_MAX characters: the slug becomes a file name, and a long backlog
+# summary used to exceed the 255-byte name limit and kill frame-stage
+# (irradiance). The id is the identity; the slug is only a human hint.
+SLUG_MAX=60
 slugify() {
-    echo "$1" \
+    local s
+    s=$(echo "$1" \
         | tr '[:upper:]' '[:lower:]' \
         | sed -E 's/[^a-z0-9]+/-/g' \
-        | sed -E 's/^-+|-+$//g'
+        | sed -E 's/^-+|-+$//g')
+    s="${s:0:${SLUG_MAX}}"
+    while [ "${s%-}" != "$s" ]; do s="${s%-}"; done
+    printf '%s\n' "$s"
 }
 
 # Escape a string for safe use as the REPLACEMENT half of a
@@ -223,24 +354,384 @@ find_spec() {
     # share the prefix). Without the prompts/ exclusion, advance-cycle/
     # archive-spec could resolve to a prompt file that has no front-matter and
     # silently no-op (verified downstream: zany-animal-slots #7).
-    find "${REPO_ROOT}/projects" -type f -name "${spec_id}-*.md" \
+    # `spikes/` is searched too: a spike lives at the REPO root, not under a
+    # project, because it may precede any project (DEC-012). Searching both here
+    # is what lets `advance-cycle SPIKE-NNN land` work without a parallel lookup.
+    #
+    # spikes/ is absent in a fresh scaffold (it's created on first `new-spike`),
+    # and `find` exits non-zero on a missing path — which under `set -o pipefail`
+    # would fail the whole pipeline. Build the search list from what exists.
+    local roots="${REPO_ROOT}/projects"
+    [ -d "${REPO_ROOT}/spikes" ] && roots="${roots} ${REPO_ROOT}/spikes"
+    # shellcheck disable=SC2086 # deliberate word-splitting: roots is a path list
+    find $roots -type f -name "${spec_id}-*.md" \
         -not -name '*-timeline.md' \
         -not -path '*/done/*' \
-        -not -path '*/prompts/*' 2>/dev/null | head -n1
+        -not -path '*/prompts/*' 2>/dev/null | sed -n 1p
 }
+
+# All spikes in the repo (the bounded-exploration lane, DEC-012). Repo-level,
+# not project-scoped — unlike find_all_specs / find_all_patches. Silent (and
+# non-failing) when spikes/ doesn't exist yet, which is the pre-first-spike state.
+find_all_spikes() {
+    [ -d "${REPO_ROOT}/spikes" ] || return 0
+    find "${REPO_ROOT}/spikes" -type f -name "SPIKE-*.md" 2>/dev/null
+}
+
+# ── Front-matter PARSE check (v0.6.41) ──────────────────────────────────────
+# `validate`'s key checks are line-oriented: they confirm required keys exist
+# but never PARSE, so front matter no YAML parser can read was reported valid
+# (irradiance SPEC-010 shipped that way). These two helpers answer "does this
+# front matter parse?" for a list of files, with one output protocol so the
+# caller doesn't care which one ran (tab-separated, one event per line):
+#     FAIL<TAB><file><TAB><message>   — each file that did not parse
+#     PARSED<TAB><n>                   — files that had front matter to check
+#     SCANNED<TAB><n>                  — files examined (completion sentinel)
+# A file whose first line is not `---`, or with no closing `---`, has no front
+# matter and is skipped. Exit 0 if all parsed, 1 if any failed.
+#
+# Order of preference (DEC-014): `sdt` once it exists → ruby → bash heuristic.
+# FM_PARSER=ruby|bash forces one (tests use it to exercise the fallback).
+fm_parser() {
+    case "${FM_PARSER:-}" in
+        ruby|bash) printf '%s' "$FM_PARSER"; return ;;
+    esac
+    if command -v ruby >/dev/null 2>&1; then printf 'ruby'; else printf 'bash'; fi
+}
+
+# Real parse with Ruby's bundled YAML (Psych). Uses YAML.parse, never
+# load/safe_load: parse builds no objects, so a date scalar is not an error on
+# any Ruby version, and it avoids safe_load's keyword API, which differs between
+# Ruby 2.6 and 3.x and fails on EVERY file when wrong — looking like findings
+# while the check never ran (irradiance SPEC-016). Files are read as UTF-8
+# regardless of locale. The rescue wraps the whole per-file body, so an
+# unreadable file is a named FAIL, not a crash.
+front_matter_parse_report_ruby() {
+    ruby -ryaml -e '
+had_error = false
+parsed = 0
+scanned = 0
+ARGV.each do |path|
+  scanned += 1
+  begin
+    lines = File.read(path, :encoding => "UTF-8").lines
+    next unless lines[0] && lines[0].rstrip == "---"
+    body = []
+    closed = false
+    lines[1..-1].each do |l|
+      if l.rstrip == "---"
+        closed = true
+        break
+      end
+      body << l
+    end
+    next unless closed
+    parsed += 1
+    YAML.parse(body.join)
+  rescue => e
+    had_error = true
+    puts "FAIL\t#{path}\t#{e.message.gsub(/[\t\n]+/, " ")}"
+  end
+end
+puts "PARSED\t#{parsed}"
+puts "SCANNED\t#{scanned}"
+exit(had_error ? 1 : 0)
+' "$@"
+}
+
+# Fallback when no parser is installed. NOT a parser: it catches the ways
+# front matter has actually broken in instances — a quoted scalar left open
+# (handback-sync's multi-line truncation) and tab indentation — and nothing
+# else. `validate` says so when it runs this one.
+front_matter_parse_report_bash() {
+    awk '
+        function finish() {
+            if (cur == "") return
+            scanned++
+            if (closed) {
+                parsed++
+                if (open != "" && err == "") err = "unterminated " open " scalar opened at line " oline
+                if (err != "") { printf "FAIL\t%s\t%s\n", cur, err; bad = 1 }
+            }
+        }
+        function indent_of(s) { match(s, /^ */); return RLENGTH }
+        # Index of the closing quote of the given kind in s, or 0.
+        function qclose(s, q,   i, c) {
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (q == "\"" && c == "\\") { i++; continue }
+                if (c == q) {
+                    if (q == "\047" && substr(s, i + 1, 1) == "\047") { i++; continue }
+                    return i
+                }
+            }
+            return 0
+        }
+        FNR == 1 {
+            finish()
+            cur = FILENAME; infm = 0; closed = 0; open = ""; err = ""; blk = -1
+            if ($0 ~ /^---[[:space:]]*$/) { infm = 1 }
+            next
+        }
+        !infm { next }
+        /^---[[:space:]]*$/ { infm = 0; closed = 1; next }
+        err != "" { next }
+        {
+            # Inside a `|` / `>` block scalar: its lines are text, not YAML.
+            if (blk >= 0) {
+                if ($0 ~ /^[[:space:]]*$/ || indent_of($0) > blk) next
+                blk = -1
+            }
+            if (open != "") {
+                if ($0 !~ /^[[:space:]]*$/ && indent_of($0) <= oind) {
+                    err = "unterminated " open " scalar opened at line " oline; next
+                }
+                if (qclose($0, oq)) open = ""
+                next
+            }
+            if ($0 ~ /^ *\t/) { err = "tab used for indentation at line " FNR; next }
+            if ($0 ~ /: +[|>][-+0-9]*( +#.*)? *$/ || $0 ~ /^ *- +[|>][-+0-9]*( +#.*)? *$/) {
+                blk = indent_of($0); next
+            }
+            # A value that opens with a quote: `key: "..."`, `- "..."`, `- key: "..."`.
+            if (match($0, /^ *(- +)?([^:#"\047 ][^:]*: +)?["\047]/)) {
+                if (substr($0, RSTART, RLENGTH) !~ /(: +|- +|^ *)["\047]$/) next
+                q = substr($0, RSTART + RLENGTH - 1, 1)
+                rest = substr($0, RSTART + RLENGTH)
+                if (!qclose(rest, q)) {
+                    open = (q == "\"") ? "double-quoted" : "single-quoted"
+                    oq = q; oline = FNR; oind = indent_of($0)
+                }
+            }
+        }
+        END { finish(); printf "PARSED\t%d\nSCANNED\t%d\n", parsed, scanned; exit bad }
+    ' "$@"
+}
+
+front_matter_parse_report() {
+    if [ "$(fm_parser)" = ruby ]; then
+        front_matter_parse_report_ruby "$@"
+    else
+        front_matter_parse_report_bash "$@"
+    fi
+}
+
+# Read `<block>.<key>` from a file's front matter as a YAML scalar.
+#
+# Line-oriented, but it honours the YAML scalar rules the line-strippers it
+# replaced got wrong (2026-11 irradiance harvest: handback notes were truncated
+# and a spec's front matter was left unparseable):
+#   - plain:          `key: a # c`   → `a`      (` #` starts a comment)
+#                     `key: a#b`     → `a#b`    (no space before #: not a comment)
+#   - double-quoted:  `key: "a # b"` → `a # b`  (unescaped; may span lines)
+#   - single-quoted:  `key: 'it''s'` → `it's`   (may span lines)
+#   - block:          `key: |` / `key: >` → the indented lines below it
+# A quoted scalar that continues onto further lines is folded with single
+# spaces, as YAML does. Output may contain newlines (block `|`, or `\n`).
+_get_fm_block_scalar() {
+    local file="$1" block="$2" key="$3"
+    awk -v b="$block" -v k="$key" '
+        function rtrim(s) { sub(/[[:space:]]+$/, "", s); return s }
+        function ltrim(s) { sub(/^[[:space:]]+/, "", s); return s }
+        function indent_of(s) { match(s, /^ */); return RLENGTH }
+        # Index of the closing quote in s, or 0 if the scalar continues.
+        function dq_close(s,   i, c) {
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\") { i++; continue }
+                if (c == "\"") return i
+            }
+            return 0
+        }
+        function sq_close(s,   i) {
+            for (i = 1; i <= length(s); i++) {
+                if (substr(s, i, 1) == "\047") {
+                    if (substr(s, i + 1, 1) == "\047") { i++; continue }
+                    return i
+                }
+            }
+            return 0
+        }
+        function dq_unescape(s,   out, i, c, n) {
+            out = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\" && i < length(s)) {
+                    i++; n = substr(s, i, 1)
+                    if (n == "n") out = out "\n"
+                    else if (n == "t") out = out "\t"
+                    else out = out n
+                } else out = out c
+            }
+            return out
+        }
+        function sq_unescape(s) { gsub(/\047\047/, "\047", s); return s }
+        function emit(s) { printf "%s\n", s; done = 1; exit }
+        # Flush whatever a multi-line scalar has collected when it ends early.
+        function flush() {
+            if (mode == "dq") emit(dq_unescape(acc))
+            if (mode == "sq") emit(sq_unescape(acc))
+            if (mode == "blk") { sub(/\n+$/, "", acc); emit(acc) }
+        }
+        /^---$/ { if (mode != "") flush(); f = !f; next }
+        !f { exit }
+        mode == "dq" || mode == "sq" {
+            if ($0 ~ /^[^[:space:]]/) flush()
+            line = ltrim($0)
+            c = (mode == "dq") ? dq_close(line) : sq_close(line)
+            if (c) {
+                acc = acc " " substr(line, 1, c - 1)
+                flush()
+            }
+            acc = acc " " rtrim(line)
+            next
+        }
+        mode == "blk" {
+            if ($0 ~ /^[[:space:]]*$/) { acc = acc "\n"; next }
+            n = indent_of($0)
+            if (n <= kind) flush()
+            if (bind < 0) bind = n
+            if (n < bind) flush()
+            part = substr($0, bind + 1)
+            if (acc == "") acc = part
+            else if (style == "|") acc = acc "\n" part
+            else acc = acc " " part
+            next
+        }
+        $0 ~ ("^" b ":") { ins = 1; next }
+        ins && /^[^[:space:]]/ { ins = 0 }
+        ins && $0 ~ ("^[[:space:]]+" k ":") {
+            kind = indent_of($0)
+            v = $0
+            sub("^[[:space:]]+" k ":[[:space:]]*", "", v)
+            if (substr(v, 1, 1) == "\"") {
+                body = substr(v, 2); c = dq_close(body)
+                if (c) emit(dq_unescape(substr(body, 1, c - 1)))
+                mode = "dq"; acc = rtrim(body); next
+            }
+            if (substr(v, 1, 1) == "\047") {
+                body = substr(v, 2); c = sq_close(body)
+                if (c) emit(sq_unescape(substr(body, 1, c - 1)))
+                mode = "sq"; acc = rtrim(body); next
+            }
+            if (v ~ /^[|>][-+0-9]*([[:space:]]+#.*)?[[:space:]]*$/) {
+                mode = "blk"; style = substr(v, 1, 1); acc = ""; bind = -1; next
+            }
+            if (v ~ /^#/) v = ""
+            sub(/[[:space:]]+#.*$/, "", v)
+            emit(rtrim(v))
+        }
+        END { if (!done && mode != "") flush() }
+    ' "$file"
+}
+
+# A handoff's `handoff.<key>` front-matter scalar (cycle / to_agent / status …).
+get_handoff_field() { _get_fm_block_scalar "$1" handoff "$2"; }
+
+# A handoff's `handback.<key>` — the agent's self-reported return values
+# (status / tokens_total / estimated_usd / synced_at …). This is how cost gets
+# into a spec when build+verify run on agents the orchestrator can't meter.
+get_handback_field() { _get_fm_block_scalar "$1" handback "$2"; }
+
+# A spike's `spike.<key>` front-matter scalar (question / mode / timebox /
+# outcome / landed_at). Empty if absent.
+get_spike_field() { _get_fm_block_scalar "$1" spike "$2"; }
 
 # Find the timeline file paired with a spec. Returns empty if none.
 # Usage: find_spec_timeline SPEC-001
 find_spec_timeline() {
     local spec_id="$1"
     find "${REPO_ROOT}/projects" -type f -name "${spec_id}-*-timeline.md" \
-        -not -path '*/done/*' 2>/dev/null | head -n1
+        -not -path '*/done/*' 2>/dev/null | sed -n 1p
 }
 
-# Find a stage file by ID.
+# A stage file by id: STAGE-NNN-<slug>.md under some project's stages/. Pass a
+# project dir to search only that project. Cycle prompts can share the id
+# (specs/prompts/STAGE-050-ship.md in crustyimg), so prompts/ and _templates/
+# are excluded, as find_spec already does for specs. `|| true`: find exits 1 on
+# a missing directory, and under pipefail that killed callers with no message.
+# Usage: find_stage STAGE-007 [projects/PROJ-002-foo]
 find_stage() {
-    local stage_id="$1"
-    find "${REPO_ROOT}/projects" -type f -name "${stage_id}-*.md" 2>/dev/null | head -n1
+    local stage_id="$1" root="${2:-${REPO_ROOT}/projects}"
+    find "$root" -type f -name "${stage_id}-*.md" -path '*/stages/*' \
+        -not -path '*/prompts/*' -not -path '*/_templates/*' 2>/dev/null \
+        | sort | sed -n 1p || true
+}
+
+# project.stage of a spec: the STAGE-NNN it belongs to. Empty if absent.
+get_spec_stage() {
+    awk '
+        /^---$/ { f = !f; next }
+        !f { exit }
+        /^project:/ { p = 1; next }
+        p && /^[a-zA-Z_]/ { p = 0 }
+        p && /^[[:space:]]+stage:/ { print $2; exit }
+    ' "$1"
+}
+
+# Un-written backlog in a stage's `## Spec Backlog` section: one raw bullet per
+# line, in order. A bullet counts when it is OPEN (`- [ ]`) and either does not
+# lead with a spec id, or still says "(not yet written".
+#
+# Keyed on structure, not on one phrase. The old reader matched the literal
+# `(not yet written)`, and stage files drift: crustyimg wrote `(not yet framed,
+# from SPEC-070 verify)`, `(chore)` and plain bullets, so 35 open items read as
+# zero in `backlog`, `roadmap` and `specs-by-stage`. A lead spec id, bold or not
+# (`**SPEC-118**`, `SPEC-106 (frame)`), means it has been promoted; but rspeed
+# pre-assigns ids (`SPEC-027 (not yet written)`) to specs never written, so the
+# explicit phrase still wins. Closed bullets (`[x]`, `[~]`) never count.
+# Usage: extract_unpromoted_bullets path/to/STAGE-001-foo.md
+extract_unpromoted_bullets() {
+    awk '
+        /^## Spec Backlog/ { in_b = 1; next }
+        in_b && /^## / { in_b = 0 }
+        in_b && /^-[[:space:]]*\[[[:space:]]\]/ {
+            rest = $0
+            sub(/^-[[:space:]]*\[[[:space:]]\][[:space:]]*/, "", rest)
+            if (rest ~ /^\**SPEC-[0-9]+/ && rest !~ /\(not yet written/) next
+            print
+        }
+    ' "$1"
+}
+
+count_unpromoted_bullets() {
+    extract_unpromoted_bullets "$1" | grep -c . || true
+}
+
+# The bullets `just frame-stage` promotes: those carrying the explicit
+# `(not yet written)` marker, the form the stage template teaches. Narrower than
+# extract_unpromoted_bullets on purpose: promotion writes specs, so it acts only
+# on what was marked for it, and frame-stage names the open bullets it skipped.
+# Must be a checkbox BULLET, not merely prose containing the phrase: the section
+# explains itself, so a doc line naming "(not yet written)" would otherwise be
+# promoted into a spec (caught by the selftest).
+extract_frameable_bullets() {
+    awk '
+        /^## Spec Backlog/ { in_b = 1; next }
+        in_b && /^## / { in_b = 0 }
+        in_b && /^-[[:space:]]*\[/ && /\(not yet written\)/ { print }
+    ' "$1"
+}
+
+# Every stage file with `status: active`, one per line. Falls back to the
+# lexically-first stage when none is active (as get_active_stage_file does).
+# A project can run several stages at once (crustyimg PROJ-010 had three);
+# with only the first, `backlog` said "(none in active stage)" while SPEC-114
+# was mid-build in the second. Views that summarise work iterate this.
+get_active_stage_files() {
+    local project_dir="$1"
+    local stages_dir="${project_dir}/stages"
+    [ -d "$stages_dir" ] || return 0
+    local s found=0
+    for s in "${stages_dir}"/STAGE-*.md; do
+        [ -f "$s" ] || continue
+        if [ "$(get_stage_status "$s")" = "active" ]; then echo "$s"; found=1; fi
+    done
+    [ "$found" = 1 ] && return 0
+    for s in "${stages_dir}"/STAGE-*.md; do
+        [ -f "$s" ] || continue
+        echo "$s"; return 0
+    done
 }
 
 # Find the "active" stage file for a given project. Heuristic: first
@@ -499,9 +990,11 @@ build_dirty() {
 # Find all specs under a project (active AND archived under done/).
 # find_spec excludes done/ on purpose; reports need both.
 # Usage: find_all_specs projects/PROJ-001-foo
+# Sorted: find returns raw directory order, which is alphabetical on APFS but
+# arbitrary on ext4, so unsorted reports listed specs differently on Linux.
 find_all_specs() {
     local project_dir="$1"
-    find "${project_dir}/specs" -type f -name "SPEC-*.md" 2>/dev/null
+    find "${project_dir}/specs" -type f -name "SPEC-*.md" 2>/dev/null | sort
 }
 
 # All PATCH-*.md under a project's patches/ (the patch lane — DEC-003).
@@ -509,7 +1002,101 @@ find_all_specs() {
 # work on them unchanged.
 find_all_patches() {
     local project_dir="$1"
-    find "${project_dir}/patches" -type f -name "PATCH-*.md" 2>/dev/null
+    find "${project_dir}/patches" -type f -name "PATCH-*.md" 2>/dev/null | sort
+}
+
+# Read a scalar from the `task:` block of a spec/patch front-matter.
+# Scoped to the block so it can't pick up a look-alike key elsewhere;
+# comment-tolerant (takes field $2). Empty if absent or `null`.
+# Usage: get_task_scalar path/to/spec.md complexity
+get_task_scalar() {
+    local file="$1" key="$2" v
+    v=$(awk -v k="$key" '
+        /^---$/ { fm = !fm; next }
+        !fm { exit }
+        /^task:/ { intask = 1; next }
+        intask && /^[^[:space:]]/ { intask = 0 }
+        intask && $0 ~ ("^[[:space:]]+" k ":") { print $2; exit }
+    ' "$file")
+    [ "$v" = "null" ] && v=""
+    printf '%s' "$v"
+}
+
+# EXPECTED size (t-shirt scale), set at design. Used by backlog, and paired
+# with the ACTUAL below by `just calibration`.
+get_spec_complexity() { get_task_scalar "$1" complexity; }
+
+# ACTUAL size, stamped at ship. Empty when nobody recorded one — which is the
+# normal state, and never an error: the estimation loop is warn-only.
+get_spec_complexity_actual() { get_task_scalar "$1" complexity_actual; }
+
+# The verify cycle's OUTCOME: approved | punch-list | rejected. Empty when the
+# spec never reached verify, or shipped before this field existed.
+#
+# Why it's a field and not prose: PLAYBOOK.md lists "verify never rejects
+# anything" as a failure signature, and until now that was uncomputable — the
+# ✅/⚠/❌ that Prompt 4 returns lived only in the spec body. These three values
+# ARE Prompt 4's three verdicts, so nothing new is asked of the verifier.
+get_spec_verify_verdict() { get_task_scalar "$1" verify_verdict; }
+
+# Every verify outcome, oldest first, space-separated (`punch-list approved`).
+# Empty when none recorded. verify_verdict above is only the last of these, so
+# a spec sent back and then approved reads as plain "approved" there; this is
+# the history. Written as a flow list (`verify_rounds: [punch-list, approved]`)
+# by append_verify_round; a block list is read too.
+get_spec_verify_rounds() {
+    awk '
+        /^---$/ { fm = !fm; next }
+        !fm { exit }
+        /^task:/ { intask = 1; next }
+        intask && /^[^[:space:]]/ { exit }
+        intask && inlist && /^[[:space:]]+- / { v = $0; sub(/^[[:space:]]+- */, "", v); sub(/[[:space:]]*#.*$/, "", v); printf "%s ", v; next }
+        intask && inlist { exit }
+        intask && /^[[:space:]]+verify_rounds:/ {
+            v = $0; sub(/^[[:space:]]+verify_rounds:[[:space:]]*/, "", v)
+            sub(/[[:space:]]*#.*$/, "", v)
+            if (v == "") { inlist = 1; next }
+            gsub(/[][,]/, " ", v)
+            n = split(v, w, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) if (w[i] != "" && w[i] != "null") printf "%s ", w[i]
+            exit
+        }
+    ' "$1" | sed -E 's/[[:space:]]+$//'
+}
+
+# Append one verify outcome to task.verify_rounds (inserting the key on a spec
+# written before it existed).
+append_verify_round() {
+    local file="$1" verdict="$2" rounds
+    rounds=$(get_spec_verify_rounds "$file")
+    rounds="${rounds:+${rounds} }${verdict}"
+    upsert_frontmatter_scalar "$file" "task.verify_rounds" "[$(printf '%s' "$rounds" | sed 's/ /, /g')]"
+}
+
+# Rank a t-shirt size so expected-vs-actual can be compared. 0 = unrecognized.
+# Usage: size_rank M
+size_rank() {
+    case "$1" in
+        XS) echo 1 ;; S) echo 2 ;; M) echo 3 ;;
+        L)  echo 4 ;; XL) echo 5 ;; XXL) echo 6 ;;
+        *)  echo 0 ;;
+    esac
+}
+
+# Optional token PREDICTION from `cost.tokens_estimate` (2-space indent, so it
+# can't collide with the session/totals `tokens_total` readers below).
+# Empty if unset/null.
+get_tokens_estimate() {
+    local file="$1" v
+    v=$(awk '
+        /^---$/ { fm = !fm; next }
+        !fm { exit }
+        /^cost:/ { in_cost = 1; next }
+        in_cost && /^[a-zA-Z_]/ { in_cost = 0 }
+        in_cost && /^  tokens_estimate:/ { print $2; exit }
+    ' "$file")
+    [ "$v" = "null" ] && v=""
+    printf '%s' "$v"
 }
 
 # Extract a spec's cycle from front-matter.
@@ -521,6 +1108,148 @@ get_spec_cycle() {
         !fm { exit }
         /^[[:space:]]+cycle:/ { print $2; exit }
     ' "$file"
+}
+
+# Human title from a spec's first `# SPEC-NNN: <title>` heading (the <title>
+# part only). Separator-tolerant (`:` / em-dash / hyphen) using the same
+# one-sub-per-separator idiom as parse_stage_plan — never a bracket class, to
+# dodge BSD-awk multibyte offset hazards. Falls back to the filename slug
+# ("SPEC-001-my-thing.md" -> "my thing") so a missing or odd heading still
+# renders something useful instead of a blank column.
+# Usage: get_spec_title path/to/spec.md
+get_spec_title() {
+    local file="$1" t
+    t=$(awk '
+        /^#[[:space:]]*SPEC-[0-9]+/ {
+            title = $0
+            sub(/^#[[:space:]]*/, "", title)
+            sub(/^SPEC-[0-9]+[[:space:]]*/, "", title)   # drop the id token
+            sub(/^:[[:space:]]*/, "", title)             # colon separator
+            sub(/^—[[:space:]]*/, "", title)             # em-dash separator
+            sub(/^-[[:space:]]*/, "", title)             # hyphen fallback
+            gsub(/[[:space:]]+$/, "", title)
+            print title; exit
+        }
+    ' "$file" 2>/dev/null)
+    if [ -z "$t" ]; then
+        t=$(basename "$file" .md | sed -E 's/^SPEC-[0-9]+-?//' | tr '-' ' ')
+    fi
+    printf '%s' "$t"
+}
+
+# Blocking dependencies from a spec's top-level `depends_on:` — the specs that
+# must SHIP before this one (distinct from references.related_specs, which is
+# informational). Handles both inline (`depends_on: [SPEC-002, SPEC-003]`) and
+# block-list YAML. One SPEC-ID per line; empty if none/`[]`.
+# Usage: get_spec_depends_on path/to/spec.md
+get_spec_depends_on() {
+    awk '
+        /^---$/ { f = !f; next }
+        !f { next }
+        /^depends_on:/ {
+            if ($0 ~ /\[/) {                              # inline: [SPEC-002, SPEC-003]
+                s = $0; sub(/^depends_on:[[:space:]]*\[/, "", s); sub(/\].*/, "", s)
+                n = split(s, a, /,/)
+                for (i = 1; i <= n; i++) { gsub(/[[:space:]"]/, "", a[i]); if (a[i] != "") print a[i] }
+                exit
+            }
+            blk = 1; next
+        }
+        blk && /^[[:space:]]*-[[:space:]]*/ {
+            g = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", g); sub(/[[:space:]]+#.*/, "", g)
+            gsub(/[[:space:]"]/, "", g); if (g != "") print g; next
+        }
+        blk && /^[^[:space:]-]/ { exit }                  # next top-level key ends the block
+    ' "$1"
+}
+
+# The DECs a spec was designed against — `references.decisions`. Handles inline
+# (`decisions: [DEC-001, DEC-004]`) and block-list YAML. One DEC-ID per line.
+#
+# This is the first spec→DEC edge anything walks. `depends_on` (above) is
+# spec→spec and `affected_scope` is DEC→path; the reference from a spec up to
+# the decisions governing it had no reader, so nothing could ask whether a spec
+# was built against a decision that isn't binding yet.
+# Usage: get_spec_referenced_decisions path/to/spec.md
+get_spec_referenced_decisions() {
+    awk '
+        /^---$/ { f = !f; next }
+        !f { next }
+        /^references:/ { inref = 1; next }
+        inref && /^[a-zA-Z_]/ { inref = 0 }
+        inref && /^[[:space:]]+decisions:/ {
+            if ($0 ~ /\[/) {                              # inline: [DEC-001, DEC-004]
+                s = $0; sub(/^[[:space:]]*decisions:[[:space:]]*\[/, "", s); sub(/\].*/, "", s)
+                n = split(s, a, /,/)
+                for (i = 1; i <= n; i++) { gsub(/[[:space:]"'\'']/, "", a[i]); if (a[i] != "" && a[i] != "null") print a[i] }
+                next
+            }
+            blk = 1; next
+        }
+        blk && /^[[:space:]]+[a-z_]+:/ { blk = 0 }        # sibling key ends the list
+        blk && /^[[:space:]]*-[[:space:]]*/ {
+            g = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", g); sub(/[[:space:]]+#.*/, "", g)
+            gsub(/[[:space:]"'\'']/, "", g); if (g != "" && g != "null") print g
+        }
+    ' "$1"
+}
+
+# Who/what currently holds a spec (the fan-out lease). Top-level `claimed_by:`,
+# empty for null/missing/unclaimed. Advisory — the hard lock for parallel work
+# is worktree/branch existence; this is the declarative "who's on it" marker.
+# Usage: get_spec_claimed_by path/to/spec.md
+get_spec_claimed_by() {
+    awk '/^---$/{f=!f;next} !f{next} /^claimed_by:/{v=$2; if(v!="null"&&v!="")print v; exit}' "$1"
+}
+
+# True (0) if the spec with SPEC-ID is shipped in the given project dir: either
+# archived under specs/done/ or carrying task.cycle: ship. Used by the ready-set.
+# Usage: spec_is_shipped SPEC-002 projects/PROJ-001-foo
+spec_is_shipped() {
+    local id="$1" pdir="$2" sf
+    sf=$(find "${pdir}/specs" -maxdepth 2 -type f -name "${id}-*.md" ! -name '*-timeline.md' 2>/dev/null | sort | sed -n 1p)
+    [ -n "$sf" ] || return 1
+    case "$sf" in */done/*) return 0 ;; esac
+    [ "$(get_spec_cycle "$sf")" = "ship" ] && return 0
+    return 1
+}
+
+# The OUTWARD OUTCOME from a spec's ship Reflection Q5 ("What can a user do now
+# that they couldn't before?") — the one line release notes are assembled from.
+# Returns empty when the slot is still the `<…>` placeholder or the spec answered
+# `none` (no user-visible outcome): both correctly keep it OUT of release notes,
+# which is exactly why `none` is a real recorded value rather than a blank.
+# Usage: get_spec_outcome path/to/spec.md
+get_spec_outcome() {
+    awk '
+        /^5\. \*\*What can a user do now/ { q = 1; next }
+        q && /^[0-9]+\. \*\*/ { exit }          # next numbered question ends the block
+        q && /^## / { exit }                     # next section ends the block
+        q && /^[[:space:]]*—[[:space:]]/ {
+            a = $0
+            sub(/^[[:space:]]*—[[:space:]]*/, "", a)
+            gsub(/[[:space:]]+$/, "", a)
+            if (a == "none" || a ~ /^</) exit    # unfilled or explicitly no outcome
+            print a; exit
+        }
+    ' "$1"
+}
+
+# Set a top-level front-matter scalar KEY to VALUE, in place. Replaces the line
+# if the key already exists in the front-matter; otherwise inserts it just before
+# the closing `---` (no field reordering, so diffs stay minimal).
+# Usage: set_fm_scalar path/to/spec.md claimed_by alice
+set_fm_scalar() {
+    local file="$1" key="$2" val="$3" tmp="${1}.fmtmp.$$"
+    awk -v k="$key" -v v="$val" '
+        /^---$/ {
+            fmc++
+            if (fmc == 2 && !seen) print k ": " v   # not found in FM → insert before close
+            print; next
+        }
+        fmc == 1 && $0 ~ ("^" k ":") { print k ": " v; seen = 1; next }
+        { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 # Extract a spec's task.type from front-matter (e.g. release, patch, story).
@@ -557,6 +1286,95 @@ sum_cost_tokens_for_spec() {
         in_sessions && /^      tokens_input:/  { v = $2; if (v ~ /^[0-9]+$/) total += v }
         in_sessions && /^      tokens_output:/ { v = $2; if (v ~ /^[0-9]+$/) total += v }
         END { print total+0 }
+    ' "$file"
+}
+
+# How a spec's metered (build/verify) cost was measured: one word for the whole
+# spec — the basis its metered sessions share, "mixed" when they differ, or
+# "unrecorded" when a metered session with a number names none. Empty when no
+# metered session has a number. See docs/cost-tracking.md "Basis": the bases
+# are different quantities (agent-result vs transcript measured 26× apart), so
+# calibration must not band them together.
+get_spec_cost_basis() {
+    awk '
+        /^---$/ { fm = !fm; next }
+        !fm { next }
+        /^cost:/ { in_cost = 1; next }
+        in_cost && /^[a-zA-Z_]/ { in_cost = 0 }
+        in_cost && /^  sessions:/ { in_s = 1; next }
+        in_cost && in_s && /^  [a-zA-Z_]/ { in_s = 0 }
+        function flush() {
+            if (metered && tok ~ /^[0-9]+$/ && tok > 0) {
+                b = (basis == "" || basis == "null") ? "unrecorded" : basis
+                if (!(b in seen)) { seen[b] = 1; nb++; only = b }
+            }
+            metered = 0; tok = ""; basis = ""
+        }
+        in_s && /^    - cycle:/ { flush(); c = $3; metered = (c == "build" || c == "verify") ; next }
+        in_s && /^      tokens_total:/ { tok = $2 }
+        in_s && /^      basis:/ { basis = $2 }
+        END {
+            flush()
+            if (nb == 1) print only
+            else if (nb > 1) print "mixed"
+        }
+    ' "$1"
+}
+
+# Every `basis:` value written on a spec's cost sessions, one per line (for the
+# validate advisory; get_spec_cost_basis above is the per-spec summary).
+list_cost_session_bases() {
+    awk '
+        /^---$/ { fm = !fm; next }
+        !fm { next }
+        /^cost:/ { in_cost = 1; next }
+        in_cost && /^[a-zA-Z_]/ { in_cost = 0 }
+        in_cost && /^      basis:/ { if ($2 != "null") print $2 }
+    ' "$1"
+}
+# The documented bases. An open set: validate reports others, never rejects them.
+SUGGESTED_COST_BASIS=" transcript agent-result slash-cost api-usage estimate "
+
+# Sum tokens across a STAGE's orchestration_cost.sessions[] — the framing and
+# cross-spec steering spend that has no spec to attach to. Prints an integer
+# (0 if empty/missing/absent).
+#
+# The slot shipped without a reader, which is the reserved-but-unwired pattern
+# the harvest flagged: a field nothing reads is a field nobody fills. Entries
+# are one indent shallower than a spec's cost sessions (4 spaces, not 6),
+# because orchestration_cost has no `totals:` sibling to disambiguate against.
+sum_orchestration_tokens_for_stage() {
+    local file="$1"
+    [ -f "$file" ] || { echo 0; return; }
+    awk '
+        /^---$/ { fm = !fm; next }
+        !fm { next }
+        /^orchestration_cost:/ { in_oc = 1; next }
+        in_oc && /^[a-zA-Z_]/ { in_oc = 0 }
+        in_oc && /^  sessions:/ { in_sessions = 1; next }
+        in_sessions && /^  [a-zA-Z_]/ { in_sessions = 0 }
+        in_sessions && /tokens_total:/ {
+            v = $NF; if (v ~ /^[0-9]+$/) total += v
+        }
+        END { print total+0 }
+    ' "$file"
+}
+
+# Same, for estimated_usd. Prints a float with 2 decimal places.
+sum_orchestration_usd_for_stage() {
+    local file="$1"
+    [ -f "$file" ] || { printf '0.00\n'; return; }
+    awk '
+        /^---$/ { fm = !fm; next }
+        !fm { next }
+        /^orchestration_cost:/ { in_oc = 1; next }
+        in_oc && /^[a-zA-Z_]/ { in_oc = 0 }
+        in_oc && /^  sessions:/ { in_sessions = 1; next }
+        in_sessions && /^  [a-zA-Z_]/ { in_sessions = 0 }
+        in_sessions && /estimated_usd:/ {
+            v = $NF; if (v ~ /^[0-9]+(\.[0-9]+)?$/) total += v
+        }
+        END { printf "%.2f\n", total+0 }
     ' "$file"
 }
 
@@ -652,8 +1470,16 @@ COST_AUDIT_GRANDFATHERED="${COST_AUDIT_GRANDFATHERED:-SPEC-001}"
 # bare id ("SPEC-014") or a full file stem ("SPEC-014-some-slug") and matches
 # on the SPEC-NNN id prefix.
 is_grandfathered_cost() {
-    local rest="${1#SPEC-}"
-    local id="SPEC-${rest%%-*}"
+    # Takes an id or a file stem (SPEC-012-slug, PATCH-003-slug); compares the
+    # PREFIX-NNN part. Patches used to be read as SPEC- ids, so a grandfathered
+    # patch never matched and the list could not exempt one.
+    local prefix rest id
+    case "$1" in
+        PATCH-*) prefix=PATCH ;;
+        *)       prefix=SPEC ;;
+    esac
+    rest="${1#"${prefix}"-}"
+    id="${prefix}-${rest%%-*}"
     case " ${COST_AUDIT_GRANDFATHERED} " in
         *" $id "*) return 0 ;;
         *) return 1 ;;
@@ -793,6 +1619,69 @@ parse_stage_plan() {
     ' "$brief"
 }
 
+# Parse a brief's optional `roadmap:` block (DEC-011) into one row per declared
+# item: `ITEM|KIND|HORIZON|RESUME_WHEN|TARGET`, with `-` for any unset field.
+#
+# This is the DECLARED half of the roadmap — forward intent that isn't a stage
+# yet. The derived half (framed STAGE-*.md files + `## Stage Plan` checkboxes)
+# is parsed elsewhere; `just roadmap` merges the two. The block is optional
+# everywhere and its absence is the normal case.
+#
+# Shape:
+#   roadmap:
+#     - item: "Weekly & monthly rollup reports"
+#       kind: pillar            # framed | planned | pillar | goal
+#       horizon: next           # now | next | later
+#       resume_when: "after the daily report stabilizes"
+#       target: 2026-09-01
+#     - item: STAGE-004         # a reference; reconciled against derived stages
+#       horizon: now
+#
+# Usage: parse_declared_roadmap projects/PROJ-001-foo
+parse_declared_roadmap() {
+    local dir="$1"
+    local brief="${dir}/brief.md"
+    [ -f "$brief" ] || return
+    awk '
+        function clean(v) {
+            sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+            sub(/^"/, "", v); sub(/"$/, "", v)
+            sub(/^'\''/, "", v); sub(/'\''$/, "", v)
+            if (v == "null") v = ""
+            return v
+        }
+        function flush() {
+            if (item != "") {
+                printf "%s|%s|%s|%s|%s\n",
+                    item,
+                    (kind      != "" ? kind      : "-"),
+                    (horizon   != "" ? horizon   : "-"),
+                    (resume    != "" ? resume    : "-"),
+                    (target    != "" ? target    : "-")
+            }
+            item = ""; kind = ""; horizon = ""; resume = ""; target = ""
+        }
+        /^---$/ { fm = !fm; if (!fm) { flush(); exit } next }
+        !fm { next }
+        /^roadmap:/ { in_r = 1; next }
+        in_r && /^[a-zA-Z_]/ { flush(); in_r = 0 }
+        !in_r { next }
+        # A new list entry always starts with `- item:`.
+        /^[[:space:]]*-[[:space:]]*item:/ {
+            flush()
+            v = $0; sub(/^[[:space:]]*-[[:space:]]*item:[[:space:]]*/, "", v)
+            item = clean(v)
+            next
+        }
+        # Continuation keys belong to the entry above.
+        /^[[:space:]]+kind:/        { v = $0; sub(/^[[:space:]]+kind:[[:space:]]*/, "", v);        kind    = clean(v); next }
+        /^[[:space:]]+horizon:/     { v = $0; sub(/^[[:space:]]+horizon:[[:space:]]*/, "", v);     horizon = clean(v); next }
+        /^[[:space:]]+resume_when:/ { v = $0; sub(/^[[:space:]]+resume_when:[[:space:]]*/, "", v); resume  = clean(v); next }
+        /^[[:space:]]+target:/      { v = $0; sub(/^[[:space:]]+target:[[:space:]]*/, "", v);      target  = clean(v); next }
+        END { flush() }
+    ' "$brief"
+}
+
 # Extract value_contribution.advances from a stage file. Empty if null
 # or missing. Usage: get_stage_value_contribution path/to/STAGE-001.md
 get_stage_value_contribution() {
@@ -812,6 +1701,24 @@ get_stage_value_contribution() {
             exit
         }
     ' "$file"
+}
+
+# Whole days between two YYYY-MM-DD dates (second minus first). Prints an
+# integer, or nothing if either date is unparseable — callers treat empty as
+# "unknown" rather than 0, because a wrong duration is worse than no duration.
+# BSD (macOS) and GNU date disagree on both parsing and epoch flags.
+days_between() {
+    local a="$1" b="$2" ea eb
+    case "$a" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) return ;; esac
+    case "$b" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) return ;; esac
+    if [ "$(uname)" = "Darwin" ]; then
+        ea=$(date -j -f "%Y-%m-%d" "$a" "+%s" 2>/dev/null) || return
+        eb=$(date -j -f "%Y-%m-%d" "$b" "+%s" 2>/dev/null) || return
+    else
+        ea=$(date -d "$a" "+%s" 2>/dev/null) || return
+        eb=$(date -d "$b" "+%s" 2>/dev/null) || return
+    fi
+    echo $(( (eb - ea) / 86400 ))
 }
 
 # Portable date math: print the date N days ago in YYYY-MM-DD.
@@ -876,6 +1783,54 @@ spec_mtime_date() {
 # comments (everything from the first '#' onward). Assumes the scalar
 # value itself contains no '#' — true for our front-matter (barewords
 # like `design`, `active`, etc).
+# Set a front-matter scalar, INSERTING the key if the block doesn't have it yet.
+#
+# update_frontmatter_scalar (below) only ever REPLACES. That is correct for
+# fields the scaffold always writes, but silently no-ops on an artifact created
+# before a field existed — and a command that reports "recorded: punch-list"
+# while writing nothing is worse than one that records nothing, because the
+# absence looks like data. Every live instance has in-flight specs predating
+# `task.verify_verdict`, so any newly-added stamped field needs this.
+#
+# Inserts at the END of the named block, carrying trailing blank lines with it
+# so the key stays visually inside its own block.
+upsert_frontmatter_scalar() {
+    local file="$1" key="$2" value="$3"
+    local top="${key%%.*}" leaf="${key##*.}"
+
+    if awk -v top="$top" -v leaf="$leaf" '
+        /^---$/ { n++; next }
+        n != 1 { next }
+        $0 ~ "^" top ":" { intop = 1; next }
+        intop && /^[a-zA-Z_]/ { intop = 0 }
+        intop && $0 ~ ("^[[:space:]]+" leaf ":") { found = 1 }
+        END { exit !found }
+    ' "$file"; then
+        update_frontmatter_scalar "$file" "$key" "$value"
+        return
+    fi
+
+    awk -v top="$top" -v leaf="$leaf" -v val="$value" '
+        BEGIN { n = 0; intop = 0; done = 0; blanks = "" }
+        /^---$/ {
+            n++
+            if (n == 2 && intop && !done) { print "  " leaf ": " val; done = 1 }
+            printf "%s", blanks; blanks = ""
+            print; next
+        }
+        n == 1 && intop && !done {
+            if ($0 ~ /^[[:space:]]*$/) { blanks = blanks $0 "\n"; next }
+            if ($0 ~ /^[a-zA-Z_]/) {
+                print "  " leaf ": " val; done = 1; intop = 0
+                printf "%s", blanks; blanks = ""
+                print; next
+            }
+        }
+        n == 1 && $0 ~ ("^" top ":") { intop = 1; print; next }
+        { printf "%s", blanks; blanks = ""; print }
+    ' "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+}
+
 update_frontmatter_scalar() {
     local file="$1"
     local key="$2"        # e.g. task.cycle or handoff.status
@@ -1004,9 +1959,9 @@ has_json_flag() {
 # These browse repo-level governance artifacts (cf. `decisions-audit`, which
 # lints them). Shared by the dash lenses and the default-dash flag counts.
 
-# All decision files (repo-level), sorted. Empty if no decisions/ dir.
+# All decision files (repo-level), sorted. Empty if there's no decisions dir.
 find_all_decisions() {
-    find "${REPO_ROOT}/decisions" -maxdepth 1 -type f -name 'DEC-*.md' 2>/dev/null | sort
+    find "$(decisions_dir)" -maxdepth 1 -type f -name 'DEC-*.md' 2>/dev/null | sort
 }
 
 # insight.id; falls back to the filename's DEC-NNN stem.
@@ -1022,6 +1977,61 @@ get_dec_confidence() {
     awk '/^---$/{f=!f;next} !f{next} /^insight:/{i=1;next} i&&/^[a-zA-Z_]/{i=0} i&&/^[[:space:]]+confidence:/{print $2;exit}' "$1"
 }
 
+# Declared lifecycle (`status:`), if the DEC carries one. OPTIONAL — empty when
+# absent, and callers fall back to get_dec_effective_status. Harvested from the
+# template's own decision log, where 13/13 DECs carried it and the shipped
+# schema did not: the fork that the docs/decisions/ audit blind spot hid.
+get_dec_status() {
+    awk '/^---$/{f=!f;next} !f{next} /^status:/{v=$2; if(v!="null"&&v!="")print v; exit}' "$1"
+}
+
+# The lifecycle to render: a declared `status:` wins; otherwise derive it, as
+# this tooling always has, from `superseded_by`. `active` is the honest value
+# for "not superseded, and nothing further declared" — which keeps every
+# existing decision log (none of which declare a status) reading exactly as
+# before, so the new field is purely additive.
+get_dec_effective_status() {
+    local s
+    s=$(get_dec_status "$1")
+    if [ -n "$s" ]; then printf '%s' "$s"; return; fi
+    if [ -n "$(get_dec_superseded_by "$1")" ]; then printf 'superseded'; else printf 'active'; fi
+}
+
+# `deciders:` — who actually made the call, one name per line. Accepts a YAML
+# flow list (`[jysf, claude]`) or a block list. Empty if absent.
+#
+# Why it earns a field of its own: `agent.id` records which agent was in the
+# room, so the shipped schema was structurally incapable of separating "the
+# human decided" from "the agent decided". PLAYBOOK.md names four calls that
+# must not be delegated, and agent-graded homework as the failure mode; this is
+# the cheapest mechanical trace of it.
+get_dec_deciders() {
+    awk '
+        /^---$/ { f = !f; next } !f { next }
+        /^deciders:/ {
+            line = $0
+            sub(/^deciders:[[:space:]]*/, "", line)
+            if (line ~ /^\[/) {                      # flow list: [a, b]
+                gsub(/^\[|\]$/, "", line)
+                n = split(line, parts, ",")
+                for (i = 1; i <= n; i++) {
+                    gsub(/^[[:space:]]+|[[:space:]]+$/, "", parts[i])
+                    gsub(/^["'\'']|["'\'']$/, "", parts[i])
+                    if (parts[i] != "" && parts[i] != "null") print parts[i]
+                }
+                exit
+            }
+            blk = 1; next                            # block list follows
+        }
+        blk && /^[a-zA-Z_]/ { exit }
+        blk && /^[[:space:]]*-[[:space:]]*/ {
+            v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v)
+            gsub(/^["'\'']|["'\'']$/, "", v)
+            if (v != "" && v != "null") print v
+        }
+    ' "$1"
+}
+
 # superseded_by (top-level). Empty if null/missing (i.e. the decision is active).
 get_dec_superseded_by() {
     awk '/^---$/{f=!f;next} !f{next} /^superseded_by:/{v=$2; if(v!="null"&&v!="")print v; exit}' "$1"
@@ -1032,15 +2042,55 @@ get_dec_title() {
     awk '/^# DEC-/{sub(/^# DEC-[0-9]+:[[:space:]]*/,""); print; exit}' "$1"
 }
 
-# affected_scope globs, one per line. Empty if none / `[]`.
+# affected_scope globs, one per line. Empty if none / `[]` / null.
+# Reads both YAML list forms:
+#   affected_scope:                      affected_scope: ["src/a.ts", 'b/**']
+#     - "src/a.ts"
+#     - b/**
+# The inline form used to be dropped silently, so a DEC written that way never
+# showed up in `decisions-audit --changed` (crustyimg), and the shipped
+# decisions/_template.md taught exactly that form. Inline items split on commas
+# outside quotes and `{}` (so `src/**/*.{ts,tsx}` stays whole), and the list
+# ends at the first `]` outside quotes, so a trailing `# e.g. [...]` comment is
+# not read as data. An inline list may wrap onto following lines.
+# Quotes are stripped: a --json consumer saw '"scripts/**"' and matched nothing.
 get_dec_affected_scope() {
     awk '
-        /^---$/ { f=!f; next } !f { next }
-        /^affected_scope:/ { s=1; next }
-        s && /^[a-zA-Z_]/ { s=0 }
+        function emit(v) {
+            sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+            if (v ~ /^".*"$/ || v ~ /^'\''.*'\''$/) v = substr(v, 2, length(v) - 2)
+            if (v != "" && v != "[]" && v != "null" && v != "~") print v
+        }
+        # Consume flow-sequence text; state (q, depth, cur) carries across lines.
+        function flow(str,   i, c) {
+            for (i = 1; i <= length(str); i++) {
+                c = substr(str, i, 1)
+                if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+                if (c == "\"" || c == "'\''") { q = c; cur = cur c; continue }
+                if (c == "]") { emit(cur); cur = ""; inflow = 0; return }
+                if (c == "{") depth++
+                else if (c == "}") depth--
+                if (c == "," && depth == 0) { emit(cur); cur = ""; continue }
+                cur = cur c
+            }
+            cur = cur " "
+        }
+        /^---$/ { if (f) exit; f = 1; next }
+        !f { exit }
+        inflow { flow($0); next }
+        /^affected_scope:/ {
+            rest = $0; sub(/^affected_scope:[[:space:]]*/, "", rest)
+            if (substr(rest, 1, 1) == "[") {
+                q = ""; depth = 0; cur = ""; inflow = 1
+                flow(substr(rest, 2))
+                next
+            }
+            s = 1; next
+        }
+        s && /^[a-zA-Z_]/ { s = 0 }
         s && /^[[:space:]]*-[[:space:]]*/ {
-            g=$0; sub(/^[[:space:]]*-[[:space:]]*/,"",g); sub(/[[:space:]]+#.*$/,"",g)
-            if (g!="" && g!="[]") print g
+            g = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", g); sub(/[[:space:]]+#.*$/, "", g)
+            emit(g)
         }
     ' "$1"
 }
@@ -1084,8 +2134,10 @@ count_open_questions() {
 }
 
 # --- Signals registry (guidance/signals.yaml) ------------------------------
-# The one typed feedback ledger: lesson | process-debt | product | risk. See
-# docs/signals.md. Powers the `just dash signals` lens + the dashboard flag.
+# The one typed feedback ledger: lesson | process-debt | product | risk |
+# golden-path. See docs/signals.md. Powers the `just dash signals` lens + the
+# dashboard flag. (`golden-path` is the only type that records something that
+# WORKED — the others are all problems.)
 
 # Emit signals as TSV: id<TAB>type<TAB>status<TAB>disposition_at<TAB>bar<TAB>summary.
 # One record per line; the multi-key `val()` strips the `key:` prefix and quotes.

@@ -43,7 +43,59 @@ project: { id ✅, status ✅ enum{proposed,active,on_hold,shipped,cancelled}, a
 repo.id ✅
 created_at ✅   shipped_at ◦
 value: { thesis ◦, beneficiaries[] ◦, success_signals[] ◦, risks_to_thesis[] ◦ }
+value_realized: { thesis_held ◦ set{yes,partly,no,too-early}, signals_observed[] ◦, evidence ◦, notes ◦ }
+closed_reason ◦ set{shipped,abandoned,superseded,parked}
+roadmap[] ◦: { item ✅, kind ◦ set{framed,planned,pillar,goal}, horizon ◦ set{now,next,later}, resume_when ◦, target ◦ }
 ```
+
+**`value:` is the prediction; `value_realized:` is the score.** The template
+captured the first and never recorded the second, which is why *"was the idea
+any good?"* was unanswerable across a whole corpus — not because nobody asked,
+but because nobody's answer was ever a field. **A prediction with no recorded
+outcome is a wish, not a hypothesis.**
+
+`just close-project` **refuses** to close a project claiming `shipped` while
+`thesis_held` is null — but only then. The refusal is conditional on the ending
+you claim, exactly like the in-flight-specs rule: an `abandoned` or `parked`
+project is not asked to score a thesis it stopped testing, and a project with no
+thesis is never asked at all. **`too-early` is a legitimate answer** — some
+theses need months of use — and it keeps the hatch honest rather than inviting
+a fabricated `yes`.
+
+**`closed_reason` is load-bearing, not a label.** `project.status` stays the
+coarse machine state; this says *why* work stopped, the signal `cancelled`
+flattens. It also decides which refusals above apply.
+
+### The declared `roadmap:` block (DEC-011)
+
+**A project's roadmap has two halves, and only one of them is a file.**
+`just roadmap` **derives** the first half — `framed` (a `STAGE-*.md` exists) and
+`planned` (a `## Stage Plan` checkbox with no file yet). That covers work that
+is shaped or at least named. It cannot express intent that isn't a stage yet.
+
+`roadmap:` is the **declared** half: themes and outcomes too coarse or too early
+to frame. `just roadmap` merges both and `--json` emits them together, so a
+portfolio tracker consumes **one typed surface** instead of re-parsing briefs.
+
+- **`kind`** — `pillar` (an unframed theme coarser than a stage) or `goal` (an
+  outcome rather than work; the seam where a future value metric attaches).
+  `framed`/`planned` are *inferred from files*, never authored.
+- **`horizon`** — `now | next | later`. Buckets are primary on purpose: a dated
+  roadmap you can't hit is worse than a bucketed one you can.
+- **`resume_when`** — an optional trigger ("after the daily report stabilizes").
+  Honest when a date can't be committed.
+- **`target`** — an optional `YYYY-MM-DD`. Discouraged as the *only* signal.
+
+**Reconciliation.** An `item:` naming a real stage (`item: STAGE-004`) is *not*
+listed twice. The derived record wins on status and dates — it is read from the
+file, which is ground truth — and the declared `horizon`/`resume_when` ride
+along on that row. Only items with no stage behind them appear in the
+`declared` bucket.
+
+Both vocabularies are **suggested sets, not enums**: `validate` warns on an
+unrecognized `kind`/`horizon` and never fails. The block is optional everywhere,
+and its absence is the normal case — most projects never need it, because the
+Stage Plan already says what is coming.
 
 **`status` vs `activity` — two axes, don't conflate them.** `status` is the
 **coarse, machine-keyed** lifecycle state that tooling branches on (keep it to the
@@ -79,18 +131,56 @@ value_contribution: { advances ◦, delivers[] ◦, explicitly_does_not[] ◦ }
 
 ```
 task: { id ✅, type ✅ enum{epic,story,task,bug,chore,release}, cycle ✅ enum{frame,design,build,verify,ship},
-        blocked ◦, priority ◦, complexity ✅ enum{S,M,L} }
+        blocked ◦, priority ◦, complexity ✅ enum{XS,S,M,L,XL,XXL}, complexity_actual ◦,
+        verify_verdict ◦ enum{approved,punch-list,rejected}, verify_rounds[] ◦ same enum }
 project: { id ✅, stage ✅ }            repo.id ✅
 agents: { architect ◦, implementer ◦, created_at ◦ }
 references: { decisions[] ◦, constraints[] ◦, related_specs[] ◦ }
+depends_on[] ◦   # blocking: specs that must SHIP first (feeds `just ready`)
+claimed_by ◦     # fan-out lease: who holds this spec now; null = free
 value_link ◦
 cost: …                                 ◦ structurally; ✅ on shipped specs via cost-audit
 ```
+
+**`verify_verdict` — what verify actually decided.** The three values are the
+three verdicts Prompt 4 already returns (`✅ APPROVED` / `⚠ PUNCH LIST` /
+`❌ REJECTED`), so nothing new is asked of the verifier — the answer just stops
+living only in prose. `just advance-cycle` stamps it whenever a spec **leaves**
+verify, in either direction:
+
+| Move | Recorded |
+|---|---|
+| `verify → ship` | `approved` |
+| `verify → build` (or `design`/`frame`) | `punch-list` |
+| either, with `--verdict rejected` | `rejected` |
+
+Each outcome is also appended to `verify_rounds` (`[punch-list, approved]`),
+because `verify_verdict` keeps only the last: a spec sent back and then approved
+reads as plain `approved` there. `just dash defects` counts pushback from the
+rounds (irradiance: the last-verdict field showed 1 pushback, its handoffs 5).
+
+Stamping only on the way to `ship` would record approvals and silently drop
+every rejection — which is the number actually worth having. The destination
+can't distinguish `punch-list` from `rejected` (both go back to build), so that
+one call is manual; the command always prints what it recorded so an inferred
+value can be corrected.
+
+Advisory in `validate`, never a gate: a spec that never reached verify has no
+verdict, and back-filling one onto a spec that shipped before the field existed
+would be fiction. Read it with `just dash defects`, which pairs it with the
+defect-catch distribution — where a defect was *caught* versus whether verify
+ever *pushed back*.
 
 The **required structural set** `just validate` enforces: `task.id`,
 `task.type`, `task.cycle` (valid enum), `task.complexity` (valid enum),
 `project.id`, `project.stage`, `repo.id`. Files under `specs/prompts/` and
 `*-timeline.md` are not specs and are skipped.
+
+`task.complexity` is the **expected** size, set at design; `task.complexity_actual`
+is the size stamped at **ship** (optional, same enum, advisory-only if
+unrecognized). Paired with the optional `cost.tokens_estimate` prediction, they
+feed `just calibration` — expected vs actual, warn-only. `S|M|L` predate the
+t-shirt widening (v0.6.26) and remain valid.
 
 A **release spec** (`task.type: release`, DEC-006) is a spec subtype: it reuses
 this exact schema (so `validate` / `cost-audit` / `status` treat it as a normal
@@ -127,8 +217,9 @@ cost:
     - cycle: <frame|design|build|verify|ship>
       agent: <model id>
       interface: <claude-code|claude-ai|api|ollama|other>
+      basis: <transcript|agent-result|slash-cost|api-usage|estimate>   # open set
       tokens_total: <int>                # ONE combined count (real on build/verify)
-      estimated_usd: <float>             # order-of-magnitude estimate
+      estimated_usd: <float>             # per component (docs/cost-tracking.md)
       duration_minutes: <number>
       recorded_at: <YYYY-MM-DD>
       notes: <string>
@@ -148,9 +239,39 @@ insight: { id ✅, type ✅ enum{decision,analysis,recommendation,observation}, 
 agent: { id ◦, session_id ◦ }
 project.id ◦   repo.id ✅
 created_at ✅   supersedes ◦   superseded_by ◦
+status ◦ set{proposed,accepted,rejected,deprecated,superseded}
+deciders[] ◦                             # WHO made the call (not which agent was present)
 affected_scope[] ◦                       # path globs; powers decisions-audit --changed
 tags[] ◦
 ```
+
+**`type` is the kind of insight, not the subject.** `architecture`, `security`,
+`process` and friends are **tags**, not types — put them in `tags[]`. (Learned
+the hard way: the template's own log used `type: architecture` on 11 of 13
+decisions while every one of them *also* carried `architecture` in `tags`.)
+
+**`status` is optional, and absent is the normal state.** Omit it and tooling
+derives `active` / `superseded` from `superseded_by` exactly as it always has, so
+an existing decision log reads unchanged. Declare it when the record has to say
+something that link cannot:
+
+- `proposed` — written down but not binding yet. Without this, a draft decision
+  is indistinguishable from a live one.
+- `rejected` — considered and turned down. **This is the one that earns the
+  field**: with nowhere to record a rejection, the same option gets re-litigated
+  every few months, and the reasoning survives only in prose.
+- `deprecated` — still true, on the way out, not yet replaced by a specific DEC.
+
+Vocabulary is an **open set** (the `project.activity` precedent): `decisions-audit`
+warns on an unrecognized value but never fails. The one hard rule is agreement —
+`status: superseded` with a null `superseded_by`, or a non-`superseded` status
+with `superseded_by` set, is a **structural error**, because the two fields then
+disagree about the same fact.
+
+**`deciders[]` records who decided, and `agent.id` does not.** `agent.id` says
+which agent was in the room; only `deciders` distinguishes *"the human made this
+call"* from *"the agent made this call."* For the calls `AGENTS.md` says must not
+be delegated, this is the cheapest mechanical trace that they weren't.
 
 ## `guidance/constraints.yaml` — repo rules (ContextCore `guidance.*`, type=constraint)
 
@@ -168,20 +289,32 @@ from a critical/high/medium/low rating: `critical`/`high` → **blocking**,
 ## `guidance/signals.yaml` — the typed feedback ledger (template extension)
 
 ```
-signals[]: { id ✅, type ✅ enum{lesson,process-debt,product,risk}, summary ✅,
-             evidence ✅, bar ◦ (lessons only), status ✅ enum{open,watch,accepted,
+signals[]: { id ✅, type ✅ enum{lesson,process-debt,product,risk,golden-path}, summary ✅,
+             evidence ✅, bar ◦ (lessons + golden-paths), status ✅ enum{open,watch,accepted,
              rejected,codified,done,dropped}, disposition_at ✅ enum{stage-close,
              project-close}, first_flagged ✅, last_touched ✅, raised_by ✅, notes ◦ }
 ```
 
 One ledger for every feedback type, so nothing rots un-decided (`lesson` is
 dispositioned at a stage close and keeps the N=3/N=2 codification bar;
-`process-debt`/`product`/`risk` at a project close). The forcing function is the
-close-disposition ritual in `FIRST_SESSION_PROMPTS.md` (Prompts 1d/1e), not a CI
-gate. Browse with `just dash signals`; the open count surfaces in `just dash`'s
-flags. No ContextCore/OTel namespace spans all four types, so `--json` emits a
-template-native `signal.*` payload (like `cost.*`, a documented extension). Full
-authoring guide + migration note: `docs/signals.md`.
+`process-debt`/`product`/`risk`/`golden-path` at a project close). The forcing
+function is the close-disposition ritual in `FIRST_SESSION_PROMPTS.md`
+(Prompts 1d/1e), not a CI gate. Browse with `just dash signals`; the open count
+surfaces in `just dash`'s flags. No ContextCore/OTel namespace spans these
+types, so `--json` emits a template-native `signal.*` payload (like `cost.*`, a
+documented extension). Full authoring guide + migration note: `docs/signals.md`.
+
+**`golden-path` is the only type that records something that WORKED.** Every
+other type is a problem — a lesson, a debt, a risk, a usage gap. That left
+*"this approach worked so well another project should copy it wholesale"* with
+nowhere to live, so it was lost at every close. It matters because the template
+has **no instance-to-instance transfer mechanism at all**: knowledge flows *up*
+through harvests and *down* into new scaffolds, never sideways from one repo to
+the next.
+
+**The bar is harder here, not softer.** A wrong paved road is worse than no
+road, because people follow it. Capture candidates freely; promote almost none —
+N=3 or it stays a preference.
 
 ## `projects/PROJ-*/handoffs/HANDOFF-*.md` — *(claude-plus-agents only)* (ContextCore `handoff.*`)
 

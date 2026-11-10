@@ -24,6 +24,22 @@ value_contribution:
   advances: null                    # one sentence; which part of project.value.thesis
   delivers: []                      # user-visible capabilities this stage delivers
   explicitly_does_not: []           # what this stage is NOT trying to do
+
+# Orchestration cost — the spend that has no spec to attach to (roadmap:
+# orchestration + framing cost attribution). Framing a stage, deciding the spec
+# breakdown, and cross-spec steering all happen BEFORE/BETWEEN specs, so today
+# they are invisible and recorded cost is systematically under-counted.
+#
+# THE ORCHESTRATOR FILLS THIS — not the human. At stage close, read your own
+# session total (`/cost` in Claude Code; the `usage` object via API) and append
+# one entry. Stage grain ONLY: do not try to split orchestration across specs —
+# that is a division you cannot observe, so any per-spec number is invented.
+# Warn-only, never a gate. A null here is honest; a guess is not. (DEC-013 §5)
+orchestration_cost:
+  sessions: []                      # - tokens_total: N
+                                    #   estimated_usd: N
+                                    #   recorded_at: YYYY-MM-DD
+                                    #   notes: "framing + spec breakdown"
 ---
 
 # STAGE-XXX: <Short Title — the coherent outcome>
@@ -60,6 +76,11 @@ them. Update status as specs progress.
 
 Format: `- [status] SPEC-ID (cycle) — one-line summary`
 
+`just frame-stage STAGE-NNN` promotes every `(not yet written)` line below into
+a real spec at `cycle: frame` with a stable ID (so `depends_on:` can point at
+it) and rewrites the line in place. An optional `[S]`/`[M]`/`[L]` tag on the
+line is carried onto the spec as `task.complexity`.
+
 - [ ] (not yet written) — <summary of a spec that will be needed>
 - [ ] SPEC-NNN (design) — <summary>
 - [x] SPEC-MMM (shipped on YYYY-MM-DD) — <summary>
@@ -90,6 +111,10 @@ FIRST_SESSION_PROMPTS.md to draft this.*
 
 - **Did we deliver the outcome in "What This Stage Is"?** <yes/no + notes>
 - **How many specs did it actually take?** <number vs. plan>
+- **How many outlines survived unchanged?** <n of m — only if this stage was
+  framed with `just frame-stage`. Counts outlines whose scope held from frame to
+  ship. A low number means framing ran ahead of what was knowable; a high one
+  means it's paying for itself.>
 - **What changed between starting and shipping?** <one sentence>
 - **Lessons that should update AGENTS.md, templates, or constraints?**
   - <one-line updates>

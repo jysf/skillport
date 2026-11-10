@@ -31,9 +31,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_lib.sh"
 
-require_initialized
+# Works in an instance AND in the template repo itself (whose own DECs live in
+# docs/decisions/) — auditing those is the whole point of the fallback.
+require_decisions_context
 
-DECISIONS_DIR="${REPO_ROOT}/decisions"
+DECISIONS_DIR="$(decisions_dir)"
 
 # ---------------------------------------------------------------------
 # Front-matter readers (decision-specific; kept local to this script).
@@ -47,6 +49,19 @@ get_insight_id() {
         /^insight:/ { i = 1; next }
         i && /^[a-zA-Z_]/ { i = 0 }
         i && /^[[:space:]]+id:/ { print $2; exit }
+    ' "$1"
+}
+
+# project.id — nested one level under `project:`. Optional in the schema, but a
+# decision with no project is an orphan in every per-project computation: the
+# scale survey had to exclude 10 such DECs outright. Advisory, not a gate.
+get_dec_project_id() {
+    awk '
+        /^---$/ { f = !f; next }
+        !f { exit }
+        /^project:/ { p = 1; next }
+        p && /^[a-zA-Z_]/ { p = 0 }
+        p && /^[[:space:]]+id:/ { v = $2; if (v != "null" && v != "") print v; exit }
     ' "$1"
 }
 
@@ -72,25 +87,9 @@ get_top_scalar() {
     ' "$file"
 }
 
-# affected_scope — a YAML list of globs at the top level. One glob per
-# line on stdout. Empty if the key is absent or `[]`.
-get_affected_scope() {
-    awk '
-        /^---$/ { f = !f; next }
-        !f { exit }
-        /^affected_scope:/ { s = 1; next }
-        s && /^[a-zA-Z_]/ { s = 0 }
-        s && /^[[:space:]]*-[[:space:]]/ {
-            v = $0
-            sub(/^[[:space:]]*-[[:space:]]*/, "", v)
-            sub(/[[:space:]]*#.*$/, "", v)       # strip trailing comment
-            sub(/^"/, "", v); sub(/"$/, "", v)   # strip double quotes
-            sub(/^'\''/, "", v); sub(/'\''$/, "", v)  # strip single quotes
-            sub(/[[:space:]]+$/, "", v)
-            if (v != "" && v != "null") print v
-        }
-    ' "$1"
-}
+# affected_scope globs, one per line: the shared reader in _lib.sh, which also
+# reads the inline `[a, b]` form this private copy silently dropped.
+get_affected_scope() { get_dec_affected_scope "$1"; }
 
 # ---------------------------------------------------------------------
 # Glob helpers.
@@ -183,6 +182,33 @@ if [ "${1:-}" = "--changed" ]; then
             git ls-files --others --exclude-standard
         } 2>/dev/null | sort -u )
         scope_desc="your uncommitted changes"
+
+        # A clean tree has no uncommitted changes, so a bare `--changed` used to
+        # report "nothing in scope" and exit 0 — a green that could not go red.
+        # A verify cycle runs in exactly that state (a fresh checkout of the
+        # branch under review) and AGENTS.md tells it to run this command, so
+        # every such audit checked nothing (crustyimg 67cd4f6). Fall back to the
+        # default branch, and say so. `|| true` on each probe: under `set -e` a
+        # failed `x=$(git …)` would end the script silently.
+        if [ "${#CHANGED[@]}" -eq 0 ]; then
+            fallback=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+            if [ -z "$fallback" ]; then
+                for cand in main master; do
+                    if git rev-parse --verify -q "$cand" >/dev/null 2>&1; then
+                        fallback="$cand"; break
+                    fi
+                done
+            fi
+            if [ -n "$fallback" ] && ! git diff --quiet "${fallback}...HEAD" 2>/dev/null; then
+                while IFS= read -r p; do
+                    [ -n "$p" ] && CHANGED+=("$p")
+                done < <(git diff --name-only "${fallback}...HEAD" 2>/dev/null | sort -u)
+                warn "Working tree is clean, so there are no uncommitted changes to audit."
+                warn "Falling back to ${fallback}...HEAD. Pass a base ref to be explicit:"
+                warn "  just decisions-audit --changed ${fallback}"
+                scope_desc="changes in ${fallback}...HEAD (fell back: working tree is clean)"
+            fi
+        fi
     fi
 
     if [ "${#CHANGED[@]}" -eq 0 ]; then
@@ -199,7 +225,9 @@ if [ "${1:-}" = "--changed" ]; then
         id=$(get_insight_id "$file")
         # The markdown H1 title; anchored to `# DEC-` so it can't pick
         # up a `#`-prefixed YAML comment inside the front-matter.
-        title=$(grep -m1 '^# DEC-' "$file" | sed -E 's/^# //')
+        # `|| true`: a DEC with no H1 makes grep match nothing, and under
+        # pipefail that ended the whole audit silently (irradiance SPEC-023).
+        title=$(grep -m1 '^# DEC-' "$file" | sed -E 's/^# //' || true)
         globs=()
         while IFS= read -r g; do
             [ -n "$g" ] && globs+=("$g")
@@ -245,6 +273,13 @@ fi
 
 errors=0
 warnings=0
+
+# `status:` is an open set like `project.activity`: an unrecognized value is
+# advisory so the vocabulary can be extended, but a value that contradicts
+# `superseded_by` is a hard error (see the check below).
+VALID_DEC_STATUS=" proposed accepted rejected deprecated superseded "
+status_notes=""
+unattributed=""
 
 MAP_IDS=()
 MAP_FILES=()
@@ -294,6 +329,37 @@ for file in "${DEC_FILES[@]}"; do
         warn "${fm_id}: missing insight.type"
         errors=$((errors + 1))
     fi
+
+    # `status:` is OPTIONAL (absent = derive from superseded_by, as always).
+    # When declared, two checks with deliberately different severities:
+    #   - an unrecognized value is ADVISORY (open-set discipline, the
+    #     `project.activity` precedent) — collected, never an error;
+    #   - a value that CONTRADICTS superseded_by is a structural error, because
+    #     the two fields then disagree about the same fact.
+    dstatus=$(get_top_scalar "$file" status)
+    if [ -n "$dstatus" ] && [ "$dstatus" != "null" ]; then
+        case "$VALID_DEC_STATUS" in
+            *" $dstatus "*) : ;;
+            *) status_notes="${status_notes}    ${fm_id}: status='${dstatus}'"$'\n' ;;
+        esac
+        dsupby=$(get_top_scalar "$file" superseded_by)
+        if [ "$dstatus" = "superseded" ] && { [ -z "$dsupby" ] || [ "$dsupby" = "null" ]; }; then
+            warn "${fm_id}: status: superseded but superseded_by is null — say which decision replaced it"
+            errors=$((errors + 1))
+        elif [ "$dstatus" != "superseded" ] && [ -n "$dsupby" ] && [ "$dsupby" != "null" ]; then
+            warn "${fm_id}: superseded_by is ${dsupby} but status is '${dstatus}' (expected 'superseded')"
+            errors=$((errors + 1))
+        fi
+    fi
+
+    # An unattributed decision — no project.id — is invisible to every
+    # per-project view. Advisory: repo-wide decisions legitimately have no
+    # project, so this can never be a gate. Only checked where attribution was
+    # possible at all: a repo with no projects/ (the template itself) would
+    # otherwise flag every decision it has.
+    if [ -d "${REPO_ROOT}/projects" ] && [ -z "$(get_dec_project_id "$file")" ]; then
+        unattributed="${unattributed}    ${fm_id}"$'\n'
+    fi
 done
 
 # Supersession integrity: every supersedes/superseded_by must point at a
@@ -340,11 +406,15 @@ done
 # affected_scope hygiene: a bare name (no path separator AND no wildcard) almost
 # never matches a nested repo path, so the decision silently governs nothing —
 # false confidence, worse than noise (zany harvest: `['_headers']` never matched
-# the real `public/_headers`).
+# the real `public/_headers`). Globs match repo-relative paths, so a bare name
+# that exists at the repo root (AGENTS.md, justfile, Cargo.toml) does match and
+# is not warned about — process decisions govern exactly those files, and a
+# permanent false warning trains people to ignore the audit (irradiance).
 for file in "${ACTIVE_FILES[@]}"; do
     idc=$(get_insight_id "$file")
     while IFS= read -r g; do
         [ -n "$g" ] || continue
+        [ -e "${REPO_ROOT}/${g}" ] && continue
         case "$g" in
             *[/*?]*) : ;;   # has a path separator or a wildcard — fine
             *) warn "${idc}: affected_scope '${g}' has no path separator or wildcard — it likely matches nothing (did you mean 'dir/${g}' or '**/${g}'?)"
@@ -394,6 +464,48 @@ for ((x = 0; x < n; x++)); do
         fi
     done
 done
+
+# Advisories: printed after the checks, never counted, never change the exit code.
+if [ -n "$status_notes" ]; then
+    echo
+    warn "unrecognized status (advisory — open set, expected one of${VALID_DEC_STATUS}):"
+    printf '%s' "$status_notes"
+fi
+if [ -n "$unattributed" ]; then
+    echo
+    warn "decision(s) with no project.id (advisory — invisible to per-project views):"
+    printf '%s' "$unattributed"
+fi
+
+# --- spec → DEC: is anything being built against a decision that isn't binding?
+# The first traceability edge this repo walks. A spec designed against a
+# `status: proposed` DEC is not necessarily wrong — proposals get built to test
+# them — but it is worth knowing, because the usual failure is that the proposal
+# was never accepted and the spec quietly became its only evidence. Advisory:
+# building against a proposal is a legitimate move, so this can never gate.
+proposed_refs=""
+while IFS= read -r pdir; do
+    [ -n "$pdir" ] || continue
+    while IFS= read -r sf; do
+        [ -n "$sf" ] || continue
+        case "$sf" in */prompts/*|*-timeline.md) continue ;; esac
+        while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            if rf=$(file_for_id "$ref"); then
+                if [ "$(get_top_scalar "$rf" status)" = "proposed" ]; then
+                    proposed_refs="${proposed_refs}    $(basename "$sf" .md) → ${ref} (still proposed)"$'\n'
+                fi
+            fi
+        done < <(get_spec_referenced_decisions "$sf")
+    done < <(find_all_specs "$pdir")
+done < <(find "${REPO_ROOT}/projects" -maxdepth 1 -type d -name 'PROJ-*' 2>/dev/null | sort)
+
+if [ -n "$proposed_refs" ]; then
+    echo
+    warn "spec(s) built against a decision that is still 'proposed' (advisory):"
+    printf '%s' "$proposed_refs"
+    printf '    %saccept the DEC, or note in it that a spec already depends on it.%s\n' "$DIM" "$RESET"
+fi
 
 echo
 if [ "$errors" -gt 0 ]; then
